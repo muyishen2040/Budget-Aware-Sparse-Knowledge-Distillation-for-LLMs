@@ -88,9 +88,16 @@ Our framework evaluates progress against 3 core boundaries:
 
 ### Language Modeling Performance
 We evaluate standard language modeling metrics, including negative log-likelihood (NLL):
-$$ \mathcal{L}_{CE} = -\mathbb{E}_{(x,y)} \log p_S(y \mid x) $$
+
+$$
+\mathcal{L}_{CE} = -\mathbb{E}_{(x,y)} \log p_S(y \mid x)
+$$
+
 and perplexity:
-$$ \mathrm{PPL} = \exp(\mathcal{L}_{CE}) $$
+
+$$
+\mathrm{PPL} = \exp(\mathcal{L}_{CE})
+$$
 
 ### Budget Efficiency
 Constraints are measured strictly by numerical `Scalars / Token` (e.g. A K=8 Top-K execution stores 16 scalars per token: 8 values + 8 indices).
