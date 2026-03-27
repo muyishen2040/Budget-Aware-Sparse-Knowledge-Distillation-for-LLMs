@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# HuggingFace & PyTorch
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+
+# Project specific caches and outputs
+teacher_cache/
+output/
+eval_results/
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo
+
+# Jupyter Notebooks
+.ipynb_checkpoints
