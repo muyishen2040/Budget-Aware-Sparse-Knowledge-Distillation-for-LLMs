@@ -1,10 +1,12 @@
 from datasets import load_dataset
 import torch
 
-def get_dataloaders(tokenizer, seq_len=256, batch_size=4, num_train_samples=10000, num_val_samples=1000):
+def get_dataloaders(tokenizer, seq_len=256, batch_size=4, num_train_samples=10000, num_val_samples=1000, 
+                    train_dataset_name="wikitext", train_dataset_config="wikitext-103-raw-v1",
+                    val_dataset_name="wikitext", val_dataset_config="wikitext-103-raw-v1"):
     # We load a small subset for quick local testing and development
-    train_dataset = load_dataset("openwebtext", trust_remote_code=True, split=f"train[:{num_train_samples}]")
-    val_dataset = load_dataset("wikitext", "wikitext-103-v1", trust_remote_code=True, split=f"validation[:{num_val_samples}]")
+    train_dataset = load_dataset(train_dataset_name, train_dataset_config, split=f"train[:{num_train_samples}]")
+    val_dataset = load_dataset(val_dataset_name, val_dataset_config, split=f"validation[:{num_val_samples}]")
     
     def tokenize_and_chunk(batch):
         tokenized = tokenizer(batch["text"])

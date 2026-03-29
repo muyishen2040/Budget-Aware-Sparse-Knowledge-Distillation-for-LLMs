@@ -371,6 +371,7 @@ def main():
     parser.add_argument("--topk_k", type=int, default=8)
     parser.add_argument("--sampling_num_draws", type=int, default=50)
     parser.add_argument("--sampling_temperature", type=float, default=1.0)
+    parser.add_argument("--dataset", type=str, default="wikitext-103-raw-v1")
     args = parser.parse_args()
 
     config = CacheConfig(
@@ -395,6 +396,8 @@ def main():
         seq_len=config.seq_len,
         batch_size=config.batch_size,
         num_train_samples=config.num_train_samples,
+        train_dataset_config=args.dataset,
+        val_dataset_config=args.dataset
     )
 
     cache_split(teacher, train_loader, "train", config)

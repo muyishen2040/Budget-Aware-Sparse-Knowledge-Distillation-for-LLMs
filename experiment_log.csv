@@ -1,0 +1,4 @@
+model,method,budget,train_dataset,val_dataset,num_train_samples,epochs,batch_size,lr,train_loss,val_nll,val_ppl,run_time_seconds,storage_mb
+pythia-160m,full,50277,wikitext-103-raw-v1,wikitext-103-raw-v1,0,0,0,0.0,0.0,4.2516742012938895,70.2228775024414,0.0,0.0
+real_full_kd,full,50277,wikitext-103-raw-v1,wikitext-103-raw-v1,200000,1,16,5e-06,1.5282,4.017574268624601,55.56615447998047,1250.19,0.0
+pythia-1.4b,full,50277,wikitext-103-raw-v1,wikitext-103-raw-v1,0,0,0,0.0,0.0,2.9109428971443227,18.374113082885742,0.0,0.0

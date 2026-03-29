@@ -15,6 +15,15 @@ def main():
     parser.add_argument("--k", type=int, default=8, help="Budget param for TopK")
     parser.add_argument("--num_draws", type=int, default=50, help="Budget param for Sampling")
     parser.add_argument("--cache_path", type=str, default=None, help="Path to cache file to measure size")
+    parser.add_argument("--log_file", type=str, default="experiment_log.csv")
+    parser.add_argument("--num_train_samples", type=int, default=0)
+    parser.add_argument("--epochs", type=int, default=0)
+    parser.add_argument("--train_batch_size", type=int, default=0)
+    parser.add_argument("--lr", type=float, default=0.0)
+    parser.add_argument("--train_loss", type=float, default=0.0)
+    parser.add_argument("--run_time_seconds", type=float, default=0.0)
+    parser.add_argument("--train_dataset", type=str, default="wikitext-103-raw-v1")
+    parser.add_argument("--val_dataset", type=str, default="wikitext-103-raw-v1")
     args = parser.parse_args()
 
     print(f"Loading model from {args.model_path}...")
@@ -28,7 +37,11 @@ def main():
 
     print("Loading validation data...")
     # Use 1k val samples for quick eval
-    _, val_loader = get_dataloaders(tokenizer, seq_len=args.seq_len, batch_size=args.batch_size, num_train_samples=2, num_val_samples=1000)
+    _, val_loader = get_dataloaders(
+        tokenizer, seq_len=args.seq_len, batch_size=args.batch_size, 
+        num_train_samples=1000, num_val_samples=1000,
+        val_dataset_config=args.val_dataset
+    )
 
     device = student.device
     total_ce_loss = 0.0
@@ -63,6 +76,36 @@ def main():
     
     # Print the evaluation summary
     print_evaluation_summary(args.method, avg_ce_loss, args.cache_path, **budget_kwargs)
+
+    # Append to CSV
+    metrics = compute_lm_metrics(avg_ce_loss)
+    import os
+    budget = args.k * 2 if args.method == "topk" else (args.num_draws * 2 if args.method == "sampling" else 50277)
+    size_mb = os.path.getsize(args.cache_path) / (1024 * 1024) if args.cache_path and os.path.exists(args.cache_path) else 0.0
+
+    import csv
+    file_exists = os.path.isfile(args.log_file)
+    with open(args.log_file, "a", newline='') as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(["model", "method", "budget", "train_dataset", "val_dataset", "num_train_samples", "epochs", "batch_size", "lr", "train_loss", "val_nll", "val_ppl", "run_time_seconds", "storage_mb"])
+        
+        writer.writerow([
+            os.path.basename(args.model_path.strip("/")),
+            args.method,
+            budget,
+            args.train_dataset,
+            args.val_dataset,
+            args.num_train_samples,
+            args.epochs,
+            args.train_batch_size,
+            args.lr,
+            args.train_loss,
+            metrics["nll"],
+            metrics["ppl"],
+            args.run_time_seconds,
+            size_mb
+        ])
 
 if __name__ == "__main__":
     main()

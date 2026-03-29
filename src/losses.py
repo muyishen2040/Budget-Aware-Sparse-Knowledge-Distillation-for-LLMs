@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 
-def compute_full_kd_loss(student_logits, teacher_logits, labels, temperature=1.0, alpha=0.5):
+def compute_full_kd_loss(student_logits, teacher_logits, labels, temperature=1.0, alpha=0.1):
     shift_logits = student_logits[..., :-1, :].contiguous().float()
     shift_labels = labels[..., 1:].contiguous()
     
@@ -22,7 +22,7 @@ def compute_full_kd_loss(student_logits, teacher_logits, labels, temperature=1.0
     loss = alpha * ce_loss + (1 - alpha) * kl_loss
     return loss, ce_loss, kl_loss
 
-def compute_topk_kd_loss(student_logits, teacher_logits, labels, k=8, temperature=1.0, alpha=0.5):
+def compute_topk_kd_loss(student_logits, teacher_logits, labels, k=8, temperature=1.0, alpha=0.1):
     shift_logits = student_logits[..., :-1, :].contiguous().float()
     shift_labels = labels[..., 1:].contiguous()
     
@@ -46,7 +46,7 @@ def compute_topk_kd_loss(student_logits, teacher_logits, labels, k=8, temperatur
     loss = alpha * ce_loss + (1 - alpha) * kl_loss
     return loss, ce_loss, kl_loss
 
-def compute_sampling_kd_loss(student_logits, teacher_logits, labels, k=8, temperature=1.0, alpha=0.5):
+def compute_sampling_kd_loss(student_logits, teacher_logits, labels, k=8, temperature=1.0, alpha=0.1):
     shift_logits = student_logits[..., :-1, :].contiguous().float()
     shift_labels = labels[..., 1:].contiguous()
     
@@ -76,7 +76,7 @@ def compute_sampling_kd_loss(student_logits, teacher_logits, labels, k=8, temper
     loss = alpha * ce_loss + (1 - alpha) * kl_loss
     return loss, ce_loss, kl_loss
 
-def compute_cached_topk_kd_loss(student_logits, topk_teacher_probs, topk_indices, labels, temperature=1.0, alpha=0.5):
+def compute_cached_topk_kd_loss(student_logits, topk_teacher_probs, topk_indices, labels, temperature=1.0, alpha=0.1):
     shift_logits = student_logits[..., :-1, :].contiguous().float()
     shift_labels = labels[..., 1:].contiguous()
     
@@ -103,7 +103,7 @@ def compute_cached_topk_kd_loss(student_logits, topk_teacher_probs, topk_indices
     loss = alpha * ce_loss + (1 - alpha) * kl_loss
     return loss, ce_loss, kl_loss
 
-def compute_cached_sampling_kd_loss(student_logits, sampled_teacher_probs, sampled_indices, labels, temperature=1.0, alpha=0.5):
+def compute_cached_sampling_kd_loss(student_logits, sampled_teacher_probs, sampled_indices, labels, temperature=1.0, alpha=0.1):
     shift_logits = student_logits[..., :-1, :].contiguous().float()
     shift_labels = labels[..., 1:].contiguous()
     
