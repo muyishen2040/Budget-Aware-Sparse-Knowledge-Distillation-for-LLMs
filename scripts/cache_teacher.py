@@ -31,7 +31,7 @@ class CacheConfig:
 
     # random sampling KD settings
     sampling_num_draws: int = 50
-    sampling_temperature: float = 1.0  # paper uses tau=1 in final setup
+    temperature: float = 1.0  # unified temperature
 
     # dtype to store probabilities
     probs_dtype: torch.dtype = torch.float32
@@ -59,6 +59,7 @@ def teacher_forward(
 def build_topk_softlabels(
     logits: torch.Tensor,
     k: int,
+    temperature: float = 1.0,
     probs_dtype: torch.dtype = torch.float32,
 ) -> Dict[str, torch.Tensor]:
     """
@@ -74,7 +75,7 @@ def build_topk_softlabels(
     as keeping the teacher probabilities on the top-k tokens and zeroing out the rest,
     which is a biased truncation-based estimator. :contentReference[oaicite:2]{index=2} :contentReference[oaicite:3]{index=3}
     """
-    probs = F.softmax(logits, dim=-1)
+    probs = F.softmax(logits / temperature, dim=-1)
     topk_probs, topk_ids = torch.topk(probs, k=k, dim=-1)
 
     return {
@@ -111,15 +112,8 @@ def build_sampling_softlabels(
     if temperature <= 0:
         raise ValueError(f"temperature must be > 0, got {temperature}")
 
-    # proposal q ∝ t_full^tau
-    teacher_probs = F.softmax(logits, dim=-1)  # [B, T, V]
-
-    if temperature == 1.0:
-        proposal_probs = teacher_probs
-    else:
-        # q_i ∝ t_i^tau
-        proposal_probs = teacher_probs.pow(temperature)
-        proposal_probs = proposal_probs / proposal_probs.sum(dim=-1, keepdim=True)
+    # proposal q ∝ softmax(logits / tau)  — correct temperature scaling
+    proposal_probs = F.softmax(logits / temperature, dim=-1)  # [B, T, V]
 
     B, T, V = proposal_probs.shape
     flat_probs = proposal_probs.reshape(-1, V)  # [B*T, V]
@@ -131,28 +125,19 @@ def build_sampling_softlabels(
         replacement=True,
     )  # [B*T, num_draws]
 
-    # Count occurrences
-    counts = torch.zeros(
-        flat_probs.shape,
-        dtype=torch.int32,
-        device=flat_probs.device,
-    )  # [B*T, V]
-    ones = torch.ones_like(flat_sampled, dtype=torch.int32)
-    counts.scatter_add_(dim=1, index=flat_sampled, src=ones)
-
-    # Convert dense count vector to sparse (ids, counts)
-    # Max number of unique sampled ids per position is <= num_draws
     max_unique = num_draws
 
     sampled_ids_list = []
     sampled_counts_list = []
     sampled_probs_list = []
 
-    nonzero_mask = counts > 0
-    for row_counts, row_mask in zip(counts, nonzero_mask):
-        ids = torch.nonzero(row_mask, as_tuple=False).squeeze(-1)      # [U]
-        cts = row_counts[ids]                                          # [U]
-        prs = cts.to(torch.float32) / float(num_draws)                 # [U]
+    # Move to CPU immediately to avoid spinning across 4096 GPU syncs per batch
+    flat_sampled_cpu = flat_sampled.cpu()
+    
+    # Iterate over batch*seq_len (e.g. 4096). Working with ~K elements per row instead of 50,277 elements!
+    for row in flat_sampled_cpu:
+        ids, cts = torch.unique(row, return_counts=True)
+        prs = cts.to(torch.float32) / float(num_draws)
 
         pad_len = max_unique - ids.numel()
         if pad_len > 0:
@@ -253,6 +238,7 @@ def save_shard(
             "cache_type": "topk",
             "k": config.topk_k,
             "seq_len": config.seq_len,
+            "temperature": config.temperature,
         }
         save_payload(
             os.path.join(config.cache_dir, f"topk_{split_name}_shard{shard_idx:04d}.pt"),
@@ -265,7 +251,7 @@ def save_shard(
             "split": split_name,
             "cache_type": "sampling",
             "num_draws": config.sampling_num_draws,
-            "temperature": config.sampling_temperature,
+            "temperature": config.temperature,
             "seq_len": config.seq_len,
         }
         save_payload(
@@ -280,6 +266,16 @@ def cache_split(
     split_name: str,
     config: CacheConfig,
 ) -> None:
+    """
+    Cache teacher outputs for a data split.
+
+    For sampling mode with large num_draws (e.g. 40, 50), accumulating ALL
+    batches in RAM before saving causes OOM (the sampled_ids tensor alone
+    can exceed 20 GB for 200k samples at k=50). We therefore always use
+    sharded saves for the sampling cache when num_draws >= 16, regardless of
+    save_per_split_single_file, then concatenate shards into one file at the
+    end. Top-K still respects save_per_split_single_file as before.
+    """
     teacher.eval()
     device = get_model_device(teacher)
     ensure_dir(config.cache_dir)
@@ -287,9 +283,16 @@ def cache_split(
     print(f"\nCaching split: {split_name}")
     print(f"Mode: {config.mode}")
 
+    # For large sampling budgets, always shard to avoid OOM
+    force_shard_sampling = (
+        config.mode in ("sampling", "both")
+        and config.sampling_num_draws >= 16
+    )
+
     storage = init_storage(config.mode)
     shard_idx = 0
     batch_counter = 0
+    sampling_shard_paths: list = []  # track shard paths for later merge
 
     for batch in tqdm(dataloader, desc=f"Caching {split_name}"):
         input_ids = batch["input_ids"].to(device)
@@ -302,6 +305,7 @@ def cache_split(
             topk_out = build_topk_softlabels(
                 logits=logits,
                 k=config.topk_k,
+                temperature=config.temperature,
                 probs_dtype=config.probs_dtype,
             )
             append_common_tensors(storage["topk"], input_ids, attention_mask, labels)
@@ -312,7 +316,7 @@ def cache_split(
             sampling_out = build_sampling_softlabels(
                 logits=logits,
                 num_draws=config.sampling_num_draws,
-                temperature=config.sampling_temperature,
+                temperature=config.temperature,
                 probs_dtype=config.probs_dtype,
             )
             append_common_tensors(storage["sampling"], input_ids, attention_mask, labels)
@@ -322,43 +326,109 @@ def cache_split(
 
         batch_counter += 1
 
-        if (not config.save_per_split_single_file) and (batch_counter % config.shard_size_batches == 0):
-            save_shard(storage, config, split_name, shard_idx)
+        should_shard = (
+            (not config.save_per_split_single_file)
+            or force_shard_sampling
+        ) and (batch_counter % config.shard_size_batches == 0)
+
+        if should_shard:
+            # For forced-shard sampling, only flush the sampling storage;
+            # topk can still accumulate if save_per_split_single_file is set.
+            if force_shard_sampling and "sampling" in storage:
+                shard_path = os.path.join(
+                    config.cache_dir,
+                    f"sampling_{split_name}_shard{shard_idx:04d}.pt",
+                )
+                sampling_payload = concat_storage(storage["sampling"])
+                sampling_payload["meta"] = {
+                    "split": split_name,
+                    "cache_type": "sampling",
+                    "num_draws": config.sampling_num_draws,
+                    "temperature": config.temperature,
+                    "seq_len": config.seq_len,
+                }
+                save_payload(shard_path, sampling_payload)
+                sampling_shard_paths.append(shard_path)
+                storage["sampling"] = init_storage("sampling")["sampling"]
+
+            if not force_shard_sampling:
+                save_shard(storage, config, split_name, shard_idx)
+                storage = init_storage(config.mode)
+
             shard_idx += 1
-            storage = init_storage(config.mode)
 
-    # Save remaining data
-    if config.save_per_split_single_file:
-        out_paths = make_output_paths(config, split_name)
+    # ── Flush any remaining batches ──────────────────────────────────────────
 
-        if "topk" in storage:
+    # Remaining topk (always single-file or normal shard)
+    if "topk" in storage and len(storage["topk"]["input_ids"]) > 0:
+        if config.save_per_split_single_file:
+            out_paths = make_output_paths(config, split_name)
             topk_payload = concat_storage(storage["topk"])
             topk_payload["meta"] = {
                 "split": split_name,
                 "cache_type": "topk",
                 "k": config.topk_k,
                 "seq_len": config.seq_len,
+                "temperature": config.temperature,
             }
             save_payload(out_paths["topk"], topk_payload)
+        else:
+            save_shard(storage, config, split_name, shard_idx)
 
-        if "sampling" in storage:
+    # Remaining sampling
+    if "sampling" in storage and len(storage["sampling"]["input_ids"]) > 0:
+        if force_shard_sampling:
+            shard_path = os.path.join(
+                config.cache_dir,
+                f"sampling_{split_name}_shard{shard_idx:04d}.pt",
+            )
             sampling_payload = concat_storage(storage["sampling"])
             sampling_payload["meta"] = {
                 "split": split_name,
                 "cache_type": "sampling",
                 "num_draws": config.sampling_num_draws,
-                "temperature": config.sampling_temperature,
+                "temperature": config.temperature,
+                "seq_len": config.seq_len,
+            }
+            save_payload(shard_path, sampling_payload)
+            sampling_shard_paths.append(shard_path)
+        elif config.save_per_split_single_file:
+            out_paths = make_output_paths(config, split_name)
+            sampling_payload = concat_storage(storage["sampling"])
+            sampling_payload["meta"] = {
+                "split": split_name,
+                "cache_type": "sampling",
+                "num_draws": config.sampling_num_draws,
+                "temperature": config.temperature,
                 "seq_len": config.seq_len,
             }
             save_payload(out_paths["sampling"], sampling_payload)
-    else:
-        has_remaining = False
-        for mode_key in storage:
-            if len(storage[mode_key]["input_ids"]) > 0:
-                has_remaining = True
-                break
-        if has_remaining:
+        else:
             save_shard(storage, config, split_name, shard_idx)
+
+    # ── If we force-sharded, merge shards into a single file ─────────────────
+    if force_shard_sampling and sampling_shard_paths:
+        print(f"Merging {len(sampling_shard_paths)} sampling shards for {split_name}...")
+        merged: Dict[str, list] = {}
+        meta = None
+        for shard_path in sampling_shard_paths:
+            shard = torch.load(shard_path)
+            if meta is None:
+                meta = shard.get("meta")
+            for k, v in shard.items():
+                if k == "meta":
+                    continue
+                merged.setdefault(k, []).append(v)
+
+        out_paths = make_output_paths(config, split_name)
+        merged_payload = {k: torch.cat(v, dim=0) for k, v in merged.items()}
+        merged_payload["meta"] = meta
+        save_payload(out_paths["sampling"], merged_payload)
+
+        # Clean up shards
+        for shard_path in sampling_shard_paths:
+            os.remove(shard_path)
+        print(f"Merged and cleaned up shards -> {out_paths['sampling']}")
 
 
 def main():
@@ -370,7 +440,7 @@ def main():
     parser.add_argument("--cache_dir", type=str, default="teacher_cache")
     parser.add_argument("--topk_k", type=int, default=8)
     parser.add_argument("--sampling_num_draws", type=int, default=50)
-    parser.add_argument("--sampling_temperature", type=float, default=1.0)
+    parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--dataset", type=str, default="wikitext-103-raw-v1")
     args = parser.parse_args()
 
@@ -384,7 +454,7 @@ def main():
         shard_size_batches=100,
         topk_k=args.topk_k,
         sampling_num_draws=args.sampling_num_draws,
-        sampling_temperature=args.sampling_temperature,
+        temperature=args.temperature,
         probs_dtype=torch.float32,
     )
 

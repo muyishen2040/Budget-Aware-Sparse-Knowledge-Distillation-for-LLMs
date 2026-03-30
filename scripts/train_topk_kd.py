@@ -2,6 +2,7 @@ import argparse
 import torch
 import torch.nn.functional as F
 from torch.optim import AdamW
+from transformers import get_linear_schedule_with_warmup
 from src.models import load_student
 from src.data import get_cached_dataloaders
 from src.losses import compute_cached_topk_kd_loss
@@ -44,6 +45,8 @@ def main():
     parser.add_argument("--output_dir", type=str, default="output/topk_kd")
     parser.add_argument("--k", type=int, default=8)
     parser.add_argument("--dataset", type=str, default="wikitext-103-raw-v1")
+    parser.add_argument("--alpha", type=float, default=0.5)
+    parser.add_argument("--temperature", type=float, default=1.0)
     args = parser.parse_args()
 
     print("Loading student model...")
@@ -55,6 +58,9 @@ def main():
     optimizer = AdamW(student.parameters(), lr=args.lr)
     
     num_epochs = args.num_epochs
+    total_steps = len(train_loader) * num_epochs
+    warmup_steps = int(0.1 * total_steps)
+    scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps, num_training_steps=total_steps)
     device = student.device
     
     gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "None"
@@ -81,11 +87,12 @@ def main():
             student_outputs = student(input_ids=input_ids, attention_mask=attention_mask)
             student_logits = student_outputs.logits
             
-            loss, ce_loss, kl_loss = compute_cached_topk_kd_loss(student_logits, topk_probs, topk_ids, labels, alpha=0.1)
+            loss, ce_loss, kl_loss = compute_cached_topk_kd_loss(student_logits, topk_probs, topk_ids, labels, temperature=args.temperature, alpha=args.alpha)
             
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+            scheduler.step()
             
             if step % 50 == 0:
                 print(f"Step {step} | Loss: {loss.item():.4f} | CE: {ce_loss.item():.4f} | KL: {kl_loss.item():.4f}", flush=True)
