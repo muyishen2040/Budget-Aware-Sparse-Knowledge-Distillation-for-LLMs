@@ -180,17 +180,30 @@ def compute_cached_sampling_kd_loss(
     )
     teacher_probs = shift_teacher_probs.masked_fill(~valid_sample_mask, 0.0)
 
-    # Sparse forward KL up to the teacher entropy constant:
-    # KL(t || s) = sum_i t_i (log t_i - log s_i)
-    # For optimization, the log t_i term is constant, so minimizing
-    # -sum_i t_i log s_i is equivalent.
-    per_token_kd = -(teacher_probs * gathered_student_log_probs).sum(dim=-1)  # [B, T-1]
+    # Renormalize sparse teacher probs over the valid K support so they sum to 1.
+    # Raw sampling probs are c_i/N (counts/draws), which sum to << 1 when there
+    # are few unique tokens. Without renormalization, the KL loss magnitude scales
+    # with sum(t_i) * (-log s_i) ~ 0.3 * 10 = 3 at best, but blows up at init
+    # because student probs are near-uniform (~1/50k). Renormalizing matches the
+    # Top-K convention and keeps KL on the same scale as CE.
+    teacher_prob_sum = teacher_probs.sum(dim=-1, keepdim=True).clamp(min=1e-9)
+    teacher_probs_norm = teacher_probs / teacher_prob_sum  # sum to 1 over valid K
 
-    # Only keep token positions that are valid for both CE labels and KD samples
-    valid_token_mask = (shift_labels != ignore_index) & valid_sample_mask.any(dim=-1)  # [B, T-1]
+    # True KL(teacher_norm || student) using F.kl_div for numerical stability.
+    # F.kl_div(log_input, target) = sum target * (log target - log_input)
+    # We pass log_student and teacher_norm; padded positions contribute 0 since teacher_norm=0.
+    kl_per_entry = F.kl_div(
+        gathered_student_log_probs,          # [B, T-1, K]  log s_k  (0 at padded)
+        teacher_probs_norm,                  # [B, T-1, K]  t_k      (0 at padded)
+        reduction="none",
+        log_target=False,
+    ).sum(dim=-1)                            # [B, T-1]
+
+    # Only keep positions valid for both CE and KD
+    valid_token_mask = (shift_labels != ignore_index) & valid_sample_mask.any(dim=-1)
 
     if valid_token_mask.any():
-        kd_loss = per_token_kd[valid_token_mask].mean()
+        kd_loss = kl_per_entry[valid_token_mask].mean() * (temperature ** 2)
     else:
         kd_loss = torch.zeros((), device=student_logits.device, dtype=shift_student_logits.dtype)
 

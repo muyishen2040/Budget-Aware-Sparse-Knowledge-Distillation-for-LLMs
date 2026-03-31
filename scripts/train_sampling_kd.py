@@ -46,6 +46,7 @@ def main():
     parser.add_argument("--k", type=int, default=8)
     parser.add_argument("--dataset", type=str, default="wikitext-103-raw-v1")
     parser.add_argument("--alpha", type=float, default=0.5)
+    parser.add_argument("--grad_clip", type=float, default=1.0, help="Max gradient norm (0 = disabled)")
     args = parser.parse_args()
 
     print("Loading student model...")
@@ -87,6 +88,8 @@ def main():
             
             optimizer.zero_grad()
             loss.backward()
+            if args.grad_clip > 0:
+                torch.nn.utils.clip_grad_norm_(student.parameters(), args.grad_clip)
             optimizer.step()
             scheduler.step()
             

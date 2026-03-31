@@ -406,29 +406,13 @@ def cache_split(
         else:
             save_shard(storage, config, split_name, shard_idx)
 
-    # ── If we force-sharded, merge shards into a single file ─────────────────
+    # ── Shards are left in place; ShardedCachedDataset in data.py loads them lazily ──
     if force_shard_sampling and sampling_shard_paths:
-        print(f"Merging {len(sampling_shard_paths)} sampling shards for {split_name}...")
-        merged: Dict[str, list] = {}
-        meta = None
-        for shard_path in sampling_shard_paths:
-            shard = torch.load(shard_path)
-            if meta is None:
-                meta = shard.get("meta")
-            for k, v in shard.items():
-                if k == "meta":
-                    continue
-                merged.setdefault(k, []).append(v)
-
-        out_paths = make_output_paths(config, split_name)
-        merged_payload = {k: torch.cat(v, dim=0) for k, v in merged.items()}
-        merged_payload["meta"] = meta
-        save_payload(out_paths["sampling"], merged_payload)
-
-        # Clean up shards
-        for shard_path in sampling_shard_paths:
-            os.remove(shard_path)
-        print(f"Merged and cleaned up shards -> {out_paths['sampling']}")
+        print(
+            f"Saved {len(sampling_shard_paths)} shards for {split_name} "
+            f"in '{config.cache_dir}'. No merge needed — ShardedCachedDataset "
+            f"will load them on demand during training."
+        )
 
 
 def main():
