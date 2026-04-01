@@ -3,34 +3,135 @@ import torch
 import os
 import glob
 
-def get_dataloaders(tokenizer, seq_len=256, batch_size=4, num_train_samples=10000, num_val_samples=1000, 
-                    train_dataset_name="wikitext", train_dataset_config="wikitext-103-raw-v1",
-                    val_dataset_name="wikitext", val_dataset_config="wikitext-103-raw-v1"):
-    # We load a small subset for quick local testing and development
-    train_dataset = load_dataset(train_dataset_name, train_dataset_config, split=f"train[:{num_train_samples}]")
-    val_dataset = load_dataset(val_dataset_name, val_dataset_config, split=f"validation[:{num_val_samples}]")
-    
-    def tokenize_and_chunk(batch):
-        tokenized = tokenizer(batch["text"])
-        concatenated = {k: sum(tokenized[k], []) for k in tokenized.keys()}
-        total_length = len(concatenated["input_ids"])
-        total_length = (total_length // seq_len) * seq_len
-        result = {
-            k: [v[i: i + seq_len] for i in range(0, total_length, seq_len)]
-            for k, v in concatenated.items()
-        }
-        result["labels"] = result["input_ids"].copy()
-        return result
-        
-    train_tokenized = train_dataset.map(tokenize_and_chunk, batched=True, remove_columns=train_dataset.column_names)
+# ---------------------------------------------------------------------------
+# Dataset registry
+# ---------------------------------------------------------------------------
+# Maps a short dataset key -> (hf_repo, hf_config, text_column, train_split, val_split)
+# hf_config can be None if the dataset has no config.
+# val_split can be None — the loader will carve val from the tail of train.
+_DATASET_REGISTRY = {
+    # tuple: (hf_repo, hf_config, text_col, train_split, val_split)
+
+    # WikiText-103
+    "wikitext": (
+        "wikitext", "wikitext-103-raw-v1", "text", "train", "validation"
+    ),
+    "wikitext-103-raw-v1": (
+        "wikitext", "wikitext-103-raw-v1", "text", "train", "validation"
+    ),
+    # codeparrot/codeparrot-clean — Python code (~5M files, ~13GB).
+    # Downloads fully on first use, then cached by HuggingFace.
+    "github-code": (
+        "codeparrot/codeparrot-clean", None, "content", "train", None
+    ),
+    "github-code-python": (
+        "codeparrot/codeparrot-clean", None, "content", "train", None
+    ),
+    # PubMed abstracts
+    "pubmed": (
+        "scientific_papers", "pubmed", "abstract", "train", "validation"
+    ),
+}
+
+
+def _resolve_dataset(name_or_key: str):
+    """Return (hf_repo, hf_config, text_col, train_split, val_split)."""
+    if name_or_key not in _DATASET_REGISTRY:
+        raise ValueError(
+            f"Unknown dataset key '{name_or_key}'. "
+            f"Known keys: {list(_DATASET_REGISTRY.keys())}"
+        )
+    return _DATASET_REGISTRY[name_or_key]
+
+
+def get_dataloaders(
+    tokenizer,
+    seq_len: int = 256,
+    batch_size: int = 4,
+    num_train_samples: int = 10000,
+    num_val_samples: int = 1000,
+    train_dataset_name: str = "wikitext",
+    train_dataset_config: str = None,   # ignored when using registry key
+    val_dataset_name: str = None,       # defaults to same as train
+    val_dataset_config: str = None,     # ignored when using registry key
+):
+    """Return (train_dataloader, val_dataloader).
+
+    Supported dataset keys:
+        'wikitext' / 'wikitext-103-raw-v1'  — WikiText-103 (default)
+        'github-code'                        — GitHub Code, all languages
+        'github-code-python'                 — GitHub Code, Python only
+        'pubmed'                             — PubMed abstracts
+
+    All datasets are downloaded fully on first use and cached by HuggingFace.
+    Subsequent runs load from the local cache instantly.
+    """
+    # ---- resolve train dataset ----
+    train_key = train_dataset_config if train_dataset_config and train_dataset_config in _DATASET_REGISTRY else train_dataset_name
+    hf_repo, hf_config, text_col, train_split_name, val_split_name = _resolve_dataset(train_key)
+
+    # ---- resolve val dataset (default: same as train) ----
+    if val_dataset_name is None and val_dataset_config is None:
+        val_key = train_key
+    else:
+        val_key = val_dataset_config if val_dataset_config and val_dataset_config in _DATASET_REGISTRY else (val_dataset_name or train_key)
+    val_hf_repo, val_hf_config, val_text_col, _, val_split_name_resolved = _resolve_dataset(val_key)
+
+    if val_split_name_resolved is not None:
+        # Dedicated val split exists — load train and val independently.
+        print(f"[data] Loading train split ({num_train_samples} samples)...")
+        train_dataset = load_dataset(hf_repo, hf_config, split=f"{train_split_name}[:{num_train_samples}]", trust_remote_code=True)
+        print(f"[data] Loading val split ({num_val_samples} samples)...")
+        val_dataset = load_dataset(val_hf_repo, val_hf_config, split=f"{val_split_name_resolved}[:{num_val_samples}]", trust_remote_code=True)
+    else:
+        # No dedicated val split — carve non-overlapping slices from train.
+        # val = first num_val_samples rows, train = next num_train_samples rows.
+        print(f"[data] Loading full train split (will carve train + val)...")
+        val_dataset = load_dataset(val_hf_repo, val_hf_config, split=f"train[:{num_val_samples}]", trust_remote_code=True)
+        train_dataset = load_dataset(hf_repo, hf_config, split=f"train[{num_val_samples}:{num_val_samples + num_train_samples}]", trust_remote_code=True)
+        print(f"[data] Carved {len(train_dataset)} train + {len(val_dataset)} val samples from train split.")
+
+    # ---- tokenize & chunk ----
+    def _make_tokenize_fn(col):
+        def tokenize_and_chunk(batch):
+            tokenized = tokenizer(batch[col])
+            # sum(list, []) is O(N^2) in Python; use standard list flatten for O(N)
+            concatenated = {
+                k: [item for sublist in tokenized[k] for item in sublist]
+                for k in tokenized.keys()
+            }
+            total_length = len(concatenated["input_ids"])
+            total_length = (total_length // seq_len) * seq_len
+            result = {
+                k: [v[i: i + seq_len] for i in range(0, total_length, seq_len)]
+                for k, v in concatenated.items()
+            }
+            result["labels"] = result["input_ids"].copy()
+            return result
+        return tokenize_and_chunk
+
+    num_workers = os.cpu_count() or 1
+    print(f"[data] Mapping datasets with {num_workers} processes...")
+
+    train_tokenized = train_dataset.map(
+        _make_tokenize_fn(text_col), 
+        batched=True, 
+        remove_columns=train_dataset.column_names,
+        num_proc=num_workers
+    )
     train_tokenized.set_format("torch")
-    
-    val_tokenized = val_dataset.map(tokenize_and_chunk, batched=True, remove_columns=val_dataset.column_names)
+
+    val_tokenized = val_dataset.map(
+        _make_tokenize_fn(val_text_col), 
+        batched=True, 
+        remove_columns=val_dataset.column_names,
+        num_proc=num_workers
+    )
     val_tokenized.set_format("torch")
-    
+
     train_dataloader = torch.utils.data.DataLoader(train_tokenized, batch_size=batch_size, shuffle=True)
     val_dataloader = torch.utils.data.DataLoader(val_tokenized, batch_size=batch_size)
-    
+
     return train_dataloader, val_dataloader
 
 class CachedDataset(torch.utils.data.Dataset):

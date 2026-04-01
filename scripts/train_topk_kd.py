@@ -44,7 +44,10 @@ def main():
     parser.add_argument("--cache_dir", type=str, default="teacher_cache")
     parser.add_argument("--output_dir", type=str, default="output/topk_kd")
     parser.add_argument("--k", type=int, default=8)
-    parser.add_argument("--dataset", type=str, default="wikitext-103-raw-v1")
+    parser.add_argument(
+        "--dataset", type=str, default="wikitext",
+        help="Dataset key (metadata only, data is loaded from cache): 'wikitext', 'github-code', 'github-code-python', 'pubmed'"
+    )
     parser.add_argument("--alpha", type=float, default=0.5)
     parser.add_argument("--temperature", type=float, default=1.0)
     args = parser.parse_args()

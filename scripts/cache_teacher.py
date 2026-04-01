@@ -416,7 +416,17 @@ def cache_split(
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Cache teacher soft-labels for sparse KD.",
+        epilog="""
+Dataset keys (for --dataset):
+  wikitext            WikiText-103 (default)
+  github-code         GitHub Code, all languages
+  github-code-python  GitHub Code, Python only
+  pubmed              PubMed abstracts
+"""
+    )
     parser.add_argument("--mode", type=str, default="both", choices=["topk", "sampling", "both"])
     parser.add_argument("--seq_len", type=int, default=256)
     parser.add_argument("--batch_size", type=int, default=4)
@@ -425,7 +435,10 @@ def main():
     parser.add_argument("--topk_k", type=int, default=8)
     parser.add_argument("--sampling_num_draws", type=int, default=50)
     parser.add_argument("--temperature", type=float, default=1.0)
-    parser.add_argument("--dataset", type=str, default="wikitext-103-raw-v1")
+    parser.add_argument(
+        "--dataset", type=str, default="wikitext",
+        help="Dataset key: 'wikitext', 'github-code', 'github-code-python', 'pubmed'"
+    )
     args = parser.parse_args()
 
     config = CacheConfig(
@@ -450,8 +463,8 @@ def main():
         seq_len=config.seq_len,
         batch_size=config.batch_size,
         num_train_samples=config.num_train_samples,
-        train_dataset_config=args.dataset,
-        val_dataset_config=args.dataset
+        train_dataset_name=args.dataset,
+        val_dataset_name=args.dataset,
     )
 
     cache_split(teacher, train_loader, "train", config)

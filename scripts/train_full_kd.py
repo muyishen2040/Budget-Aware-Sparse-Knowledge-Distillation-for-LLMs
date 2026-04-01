@@ -43,7 +43,10 @@ def main():
     parser.add_argument("--num_train_samples", type=int, default=2000)
     parser.add_argument("--seq_len", type=int, default=256)
     parser.add_argument("--output_dir", type=str, default="output/full_kd")
-    parser.add_argument("--dataset", type=str, default="wikitext-103-raw-v1")
+    parser.add_argument(
+        "--dataset", type=str, default="wikitext",
+        help="Dataset key: 'wikitext', 'github-code', 'github-code-python', 'pubmed'"
+    )
     parser.add_argument("--alpha", type=float, default=0.1)
     parser.add_argument("--temperature", type=float, default=1.0)
     args = parser.parse_args()
@@ -52,7 +55,7 @@ def main():
     teacher, student, tokenizer = load_models()
     
     print("Loading data...")
-    train_loader, val_loader = get_dataloaders(tokenizer, seq_len=args.seq_len, batch_size=args.batch_size, num_train_samples=args.num_train_samples, train_dataset_config=args.dataset, val_dataset_config=args.dataset)
+    train_loader, val_loader = get_dataloaders(tokenizer, seq_len=args.seq_len, batch_size=args.batch_size, num_train_samples=args.num_train_samples, train_dataset_name=args.dataset, val_dataset_name=args.dataset)
     
     optimizer = AdamW(student.parameters(), lr=args.lr)
     

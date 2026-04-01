@@ -22,8 +22,14 @@ def main():
     parser.add_argument("--lr", type=float, default=0.0)
     parser.add_argument("--train_loss", type=float, default=0.0)
     parser.add_argument("--run_time_seconds", type=float, default=0.0)
-    parser.add_argument("--train_dataset", type=str, default="wikitext-103-raw-v1")
-    parser.add_argument("--val_dataset", type=str, default="wikitext-103-raw-v1")
+    parser.add_argument(
+        "--train_dataset", type=str, default="wikitext",
+        help="Dataset key used during training (for logging): 'wikitext', 'github-code', 'github-code-python', 'pubmed'"
+    )
+    parser.add_argument(
+        "--val_dataset", type=str, default="wikitext",
+        help="Dataset key for validation: 'wikitext', 'github-code', 'github-code-python', 'pubmed'"
+    )
     args = parser.parse_args()
 
     print(f"Loading model from {args.model_path}...")
@@ -40,7 +46,7 @@ def main():
     _, val_loader = get_dataloaders(
         tokenizer, seq_len=args.seq_len, batch_size=args.batch_size, 
         num_train_samples=1000, num_val_samples=1000,
-        val_dataset_config=args.val_dataset
+        val_dataset_name=args.val_dataset
     )
 
     device = student.device
