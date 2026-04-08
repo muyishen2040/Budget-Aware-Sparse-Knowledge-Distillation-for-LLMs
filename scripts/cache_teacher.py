@@ -267,6 +267,11 @@ def save_payload(path: str, payload: Dict[str, Any]) -> None:
 
 def make_output_paths(config: CacheConfig, split_name: str) -> Dict[str, str]:
     out = {}
+    # ADD A PATH FOR FULL LOGITS CACHE
+    #==============================================================================================
+    if config.mode == "full_logits":
+        out["full_logits"] = os.path.join(config.cache_dir, f"full_logits_{split_name}.pt")
+    #==============================================================================================
     if config.mode in ("topk", "both"):
         out["topk"] = os.path.join(config.cache_dir, f"topk_{split_name}.pt")
     if config.mode in ("sampling", "both"):
