@@ -30,13 +30,13 @@ def compute_full_kd_loss(student_logits, teacher_logits, labels, temperature=1.0
     return loss, ce_loss, kl_loss
 
 def compute_topk_kd_loss(student_logits, teacher_logits, labels, k=8, temperature=1.0, alpha=0.1):
-    shift_logits = student_logits[..., :-1, :].contiguous().float()
-    shift_labels = labels[..., 1:].contiguous()
+    shift_logits = student_logits[..., :-1, :].contiguous().float() # student output: (everything except the last token)
+    shift_labels = labels[..., 1:].contiguous() # labels: (everything except the first token)
     
     ce_loss = F.cross_entropy(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
     
     shift_student_logits = shift_logits
-    shift_teacher_logits = teacher_logits[..., :-1, :].contiguous().float()
+    shift_teacher_logits = teacher_logits[..., :-1, :].contiguous().float() # teacher output: (everything except the last token)
     
     topk_teacher_logits, topk_indices = torch.topk(shift_teacher_logits, k, dim=-1)
     

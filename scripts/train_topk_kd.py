@@ -23,9 +23,10 @@ def evaluate(student, val_loader, device):
 
             outputs = student(input_ids=input_ids, attention_mask=attention_mask)
             logits = outputs.logits
-
-            shift_logits = logits[..., :-1, :].contiguous().float()
-            shift_labels = labels[..., 1:].contiguous()
+            
+            # causal label shifting for CE loss (same as in full KD) - this is independent of the top-k teacher loss
+            shift_logits = logits[..., :-1, :].contiguous().float() # model output: (everything except the last token)
+            shift_labels = labels[..., 1:].contiguous() # labels: (everything except the first token)
             
             ce_loss = F.cross_entropy(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1), reduction='sum')
             valid_tokens = (shift_labels != -100).sum()

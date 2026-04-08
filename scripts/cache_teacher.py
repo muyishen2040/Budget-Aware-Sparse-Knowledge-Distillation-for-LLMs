@@ -14,7 +14,10 @@ from src.data import get_dataloaders
 @dataclass
 class CacheConfig:
     # which caches to create: "topk", "sampling", or "both"
-    mode: Literal["topk", "sampling", "both"] = "both"
+    # ADD A MODE TO CACHE FULL LOGITS --> SET FULL LOGITS TO THE DEFAULT MODE
+    #==============================================================================================
+    mode: Literal["topk", "sampling", "both", "full_logits"] = "full_logits"
+    #==============================================================================================
 
     # data
     seq_len: int = 256
@@ -55,6 +58,37 @@ def teacher_forward(
         logits = outputs.logits  # [B, T, V]
     return logits
 
+
+# ADD A METHOD: build_all_logits_softlabels() that just returns the full teacher distribution as probs (after temperature scaling) 
+# for each token, without top-k truncation or sampling. This would be used for the "full_logits" mode of caching, and the corresponding 
+# loss would be standard KL divergence over the full vocabulary.
+#==============================================================================================
+def build_full_logits_softlabels(
+    logits: torch.Tensor,
+    k: int,
+    temperature: float = 1.0,
+    probs_dtype: torch.dtype = torch.float32,
+) -> Dict[str, torch.Tensor]:
+    """
+    Build full teacher soft labels (no truncation or sampling).
+
+    Returns:
+        {
+            "probs": [B, T, V],  full teacher probabilities after temperature scaling
+        }
+    """
+    # find full output prob dist over all batches, seq length, and vocab tokens
+    probs = F.softmax(logits / temperature, dim=-1).to(dtype=probs_dtype)
+    
+    # find the k most probable tokens at each position for logging/debugging (not used in loss)
+    topk_probs, topk_ids = torch.topk(probs, k=k, dim=-1)
+    
+    return {
+        "probs": probs.cpu(),  # [B, T, V]
+        "topk_ids": topk_ids.cpu(),  # [B, T, K]
+        "topk_probs": topk_probs.cpu(),  # [B, T, K]
+    }
+#==============================================================================================
 
 def build_topk_softlabels(
     logits: torch.Tensor,
@@ -167,7 +201,20 @@ def build_sampling_softlabels(
 def init_storage(mode: str) -> Dict[str, Dict[str, list]]:
     storage: Dict[str, Dict[str, list]] = {}
 
-    if mode in ("topk", "both"):
+    # ADD A STORAGE KEY FOR FULL LOGITS MODE
+    #==============================================================================================
+    if mode == "full_logits":
+        storage["full_logits"] = {
+            "input_ids": [],
+            "attention_mask": [],
+            "labels": [],
+            "probs": [],  # store full teacher probs (after temperature scaling) here
+            "topk_ids": [],
+            "topk_probs": [],
+        }
+    #==============================================================================================
+    
+    elif mode in ("topk", "both"):
         storage["topk"] = {
             "input_ids": [],
             "attention_mask": [],
@@ -176,7 +223,7 @@ def init_storage(mode: str) -> Dict[str, Dict[str, list]]:
             "topk_probs": [],
         }
 
-    if mode in ("sampling", "both"):
+    elif mode in ("sampling", "both"):
         storage["sampling"] = {
             "input_ids": [],
             "attention_mask": [],
@@ -185,6 +232,8 @@ def init_storage(mode: str) -> Dict[str, Dict[str, list]]:
             "sampled_counts": [],
             "sampled_probs": [],
         }
+    else:
+        raise ValueError(f"Invalid mode: {mode}")
 
     return storage
 
@@ -231,7 +280,23 @@ def save_shard(
     split_name: str,
     shard_idx: int,
 ) -> None:
-    if "topk" in storage:
+    
+    # ADD A BRANCH FOR SAVING FULL LOGITS SHARD
+    #==============================================================================================
+    if "full_logits" in storage:
+        full_logits_payload = concat_storage(storage["full_logits"])
+        full_logits_payload["meta"] = {
+            "split": split_name,
+            "cache_type": "full_logits",
+            "temperature": config.temperature,
+            "seq_len": config.seq_len,
+        }
+        save_payload(
+            os.path.join(config.cache_dir, f"full_logits_{split_name}_shard{shard_idx:04d}.pt"),
+            full_logits_payload,
+        )
+    #==============================================================================================    
+    elif "topk" in storage:
         topk_payload = concat_storage(storage["topk"])
         topk_payload["meta"] = {
             "split": split_name,
@@ -245,7 +310,7 @@ def save_shard(
             topk_payload,
         )
 
-    if "sampling" in storage:
+    elif "sampling" in storage:
         sampling_payload = concat_storage(storage["sampling"])
         sampling_payload["meta"] = {
             "split": split_name,
@@ -258,7 +323,8 @@ def save_shard(
             os.path.join(config.cache_dir, f"sampling_{split_name}_shard{shard_idx:04d}.pt"),
             sampling_payload,
         )
-
+    else:
+        raise ValueError("Storage must contain either 'full_logits', 'topk', or 'sampling' key.")
 
 def cache_split(
     teacher: torch.nn.Module,
@@ -288,7 +354,11 @@ def cache_split(
         config.mode in ("sampling", "both")
         and config.sampling_num_draws >= 16
     )
-
+    
+    # TURN OFF FORCED SHARDING 
+    #==============================================================================================
+    assert force_shard_sampling == False, "Forced sharding for sampling with num_draws >= 16 is currently enabled to avoid OOM. If you want to disable it, set force_shard_sampling = False in the code."
+    #==============================================================================================
     storage = init_storage(config.mode)
     shard_idx = 0
     batch_counter = 0
@@ -300,6 +370,22 @@ def cache_split(
         labels = batch["labels"].to(device)
 
         logits = teacher_forward(teacher, input_ids, attention_mask)
+        
+        # *** FULL LOGIT CACHE WOULD BE HERE  ***
+        #==============================================================================================
+        if config.mode == "full_logits":
+            full_logits_out = build_full_logits_softlabels(
+                logits=logits,
+                k=config.topk_k,  # pass k for logging/debugging but it won't affect the loss since we return the full distribution
+                temperature=config.temperature,
+                probs_dtype=config.probs_dtype,
+            )
+            append_common_tensors(storage["full_logits"], input_ids, attention_mask, labels)
+            storage["full_logits"]["probs"].append(full_logits_out["probs"])
+            # we can optionally also store the top-k ids and probs for analysis
+            storage["full_logits"]["topk_ids"].append(full_logits_out["topk_ids"])
+            storage["full_logits"]["topk_probs"].append(full_logits_out["topk_probs"])
+        #==============================================================================================
 
         if config.mode in ("topk", "both"):
             topk_out = build_topk_softlabels(
@@ -327,11 +413,14 @@ def cache_split(
         batch_counter += 1
 
         should_shard = (
-            (not config.save_per_split_single_file)
-            or force_shard_sampling
+            (not config.save_per_split_single_file) #--> not(True) = False
+            or force_shard_sampling                 # --> False (currently disabled)
         ) and (batch_counter % config.shard_size_batches == 0)
 
         if should_shard:
+            # ==================================================================================================================================
+            raise Exception("Sharding logic is currently disabled to avoid OOM. If you want to enable it, set should_shard = True in the code.")
+            # ==================================================================================================================================
             # For forced-shard sampling, only flush the sampling storage;
             # topk can still accumulate if save_per_split_single_file is set.
             if force_shard_sampling and "sampling" in storage:
@@ -359,8 +448,24 @@ def cache_split(
 
     # ── Flush any remaining batches ──────────────────────────────────────────
 
+    # SAVE FULL LOGITS CACHE TO OUTPUT FILE
+    #==============================================================================================
+    if "full_logits" in storage and len(storage["full_logits"]["input_ids"]) > 0:
+        if config.save_per_split_single_file:
+            out_paths = make_output_paths(config, split_name)
+            full_logits_payload = concat_storage(storage["full_logits"])
+            full_logits_payload["meta"] = {
+                "split": split_name,
+                "cache_type": "full_logits",
+                "temperature": config.temperature,
+                "seq_len": config.seq_len,
+            }
+            save_payload(out_paths["full_logits"], full_logits_payload)
+        else:
+            save_shard(storage, config, split_name, shard_idx)
+    # ==============================================================================================
     # Remaining topk (always single-file or normal shard)
-    if "topk" in storage and len(storage["topk"]["input_ids"]) > 0:
+    elif "topk" in storage and len(storage["topk"]["input_ids"]) > 0:
         if config.save_per_split_single_file:
             out_paths = make_output_paths(config, split_name)
             topk_payload = concat_storage(storage["topk"])
@@ -376,7 +481,7 @@ def cache_split(
             save_shard(storage, config, split_name, shard_idx)
 
     # Remaining sampling
-    if "sampling" in storage and len(storage["sampling"]["input_ids"]) > 0:
+    elif "sampling" in storage and len(storage["sampling"]["input_ids"]) > 0:
         if force_shard_sampling:
             shard_path = os.path.join(
                 config.cache_dir,
@@ -405,9 +510,14 @@ def cache_split(
             save_payload(out_paths["sampling"], sampling_payload)
         else:
             save_shard(storage, config, split_name, shard_idx)
-
+    else:
+        raise ValueError("No data to save for sampling cache, but expected some based on batch processing.")
+    
     # ── Shards are left in place; ShardedCachedDataset in data.py loads them lazily ──
     if force_shard_sampling and sampling_shard_paths:
+        # =========================================================================================================================================================
+        raise Exception("Forced sharding for sampling with num_draws >= 16 is currently enabled to avoid OOM. If you want to disable it, set force_shard_sampling = False in the code.")
+        # =========================================================================================================================================================
         print(
             f"Saved {len(sampling_shard_paths)} shards for {split_name} "
             f"in '{config.cache_dir}'. No merge needed — ShardedCachedDataset "
@@ -427,7 +537,8 @@ Dataset keys (for --dataset):
   pubmed              PubMed abstracts
 """
     )
-    parser.add_argument("--mode", type=str, default="both", choices=["topk", "sampling", "both"])
+    # add "full_logits" to the mode choices and set it as the default
+    parser.add_argument("--mode", type=str, default="full_logits", choices=["topk", "sampling", "both", "full_logits"])
     parser.add_argument("--seq_len", type=int, default=256)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--num_train_samples", type=int, default=2000)
@@ -442,7 +553,7 @@ Dataset keys (for --dataset):
     args = parser.parse_args()
 
     config = CacheConfig(
-        mode=args.mode,
+        mode=args.mode, # "full_logits" by default, can be set to "topk", "sampling", or "both" for different caches
         seq_len=args.seq_len,
         batch_size=args.batch_size,
         num_train_samples=args.num_train_samples if args.num_train_samples > 0 else None,
