@@ -240,6 +240,9 @@ def get_cached_dataloaders(cache_fmt="topk", cache_dir="teacher_cache", batch_si
         pattern = os.path.join(cache_dir, f"{cache_fmt}_{split}_shard*.pt")
         shard_paths = sorted(glob.glob(pattern))
         if shard_paths:
+            # ==============================================================
+            raise NotImplementedError("Sharded cache loading is not yet implemented in this snippet. Detected shards:\n" + "\n".join(shard_paths))
+            # ==============================================================
             print(f"[data] Found {len(shard_paths)} shards for {cache_fmt}/{split} — using ShardedCachedDataset")
             return ShardedCachedDataset(shard_paths)
 
