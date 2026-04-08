@@ -365,6 +365,11 @@ def cache_split(
     sampling_shard_paths: list = []  # track shard paths for later merge
 
     for batch in tqdm(dataloader, desc=f"Caching {split_name}"):
+        
+        if batch_counter > 1:
+            print("Batch limit reached for testing. Stopping early.")
+            break
+        
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
         labels = batch["labels"].to(device)
