@@ -356,13 +356,13 @@ def cache_split(
 
     # For large sampling budgets, always shard to avoid OOM
     force_shard_sampling = (
-        config.mode in ("sampling", "both")
+        config.mode in ("sampling", "both", "full_logits")  # full_logits can also be large if seq_len and vocab are large
         and config.sampling_num_draws >= 16
     )
     
     # TURN OFF FORCED SHARDING 
     #==============================================================================================
-    assert force_shard_sampling == False, "Forced sharding for sampling with num_draws >= 16 is currently enabled to avoid OOM. If you want to disable it, set force_shard_sampling = False in the code."
+    assert force_shard_sampling == True, "Sharding is needed for full_logits mode"
     #==============================================================================================
     storage = init_storage(config.mode)
     shard_idx = 0
@@ -370,6 +370,12 @@ def cache_split(
     sampling_shard_paths: list = []  # track shard paths for later merge
 
     for batch in tqdm(dataloader, desc=f"Caching {split_name}"):
+        
+        # ==============================================================================================
+        if batch_counter >= 250:
+            print(f"Reached batch limit for testing: {batch_counter} batches processed. Stopping early.")
+            break
+        # =============================================================================================
         
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
@@ -420,13 +426,16 @@ def cache_split(
 
         should_shard = (
             (not config.save_per_split_single_file) #--> not(True) = False
-            or force_shard_sampling                 # --> False (currently disabled)
+            or force_shard_sampling                 # --> True
         ) and (batch_counter % config.shard_size_batches == 0)
 
+        # ==============================================================================================
+        if batch_counter % config.shard_size_batches == 0:
+            assert should_shard == True, "Sharding should be forced on for sampling mode with num_draws >= 16 to avoid OOM, and save_per_split_single_file is ignored in this case. Please check the logic for should_shard if you see this assertion error."
+        # ==============================================================================================
+        
         if should_shard:
-            # ==================================================================================================================================
-            raise Exception("Sharding logic is currently disabled to avoid OOM. If you want to enable it, set should_shard = True in the code.")
-            # ==================================================================================================================================
+
             # For forced-shard sampling, only flush the sampling storage;
             # topk can still accumulate if save_per_split_single_file is set.
             if force_shard_sampling and "sampling" in storage:
@@ -446,6 +455,25 @@ def cache_split(
                 sampling_shard_paths.append(shard_path)
                 storage["sampling"] = init_storage("sampling")["sampling"]
 
+            # MAKE A BRANCH FOR FULL LOGITS SHARDING IF MODE IS FULL_LOGITS
+            # ==============================================================================================
+            if force_shard_sampling and "full_logits" in storage:
+                shard_path = os.path.join(
+                    config.cache_dir,
+                    f"full_logits_{split_name}_shard{shard_idx:04d}.pt",
+                )
+                full_logits_payload = concat_storage(storage["full_logits"])
+                full_logits_payload["meta"] = {
+                    "split": split_name,
+                    "cache_type": "full_logits",
+                    "temperature": config.temperature,
+                    "seq_len": config.seq_len,
+                }
+                save_payload(shard_path, full_logits_payload)
+                sampling_shard_paths.append(shard_path)
+                storage["full_logits"] = init_storage("full_logits")["full_logits"]
+            # ==============================================================================================
+            
             if not force_shard_sampling:
                 save_shard(storage, config, split_name, shard_idx)
                 storage = init_storage(config.mode)
@@ -470,6 +498,7 @@ def cache_split(
         else:
             save_shard(storage, config, split_name, shard_idx)
     # ==============================================================================================
+    
     # Remaining topk (always single-file or normal shard)
     elif "topk" in storage and len(storage["topk"]["input_ids"]) > 0:
         if config.save_per_split_single_file:
@@ -520,15 +549,14 @@ def cache_split(
         raise ValueError("No data to save for sampling cache, but expected some based on batch processing.")
     
     # ── Shards are left in place; ShardedCachedDataset in data.py loads them lazily ──
-    if force_shard_sampling and sampling_shard_paths:
-        # =========================================================================================================================================================
-        raise Exception("Forced sharding for sampling with num_draws >= 16 is currently enabled to avoid OOM. If you want to disable it, set force_shard_sampling = False in the code.")
-        # =========================================================================================================================================================
+    if force_shard_sampling and (sampling_shard_paths):
         print(
             f"Saved {len(sampling_shard_paths)} shards for {split_name} "
             f"in '{config.cache_dir}'. No merge needed — ShardedCachedDataset "
             f"will load them on demand during training."
         )
+
+
 
 
 def main():
