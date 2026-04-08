@@ -26,8 +26,8 @@ class CacheConfig:
 
     # output
     cache_dir: str = "teacher_cache"
-    save_per_split_single_file: bool = True   # if False, save shards instead
-    shard_size_batches: int = 100             # used only when save_per_split_single_file=False
+    save_per_split_single_file: bool = False   # if False, save shards instead
+    shard_size_batches: int = 50 #100             # used only when save_per_split_single_file=False
 
     # top-k settings
     topk_k: int = 8
@@ -439,6 +439,9 @@ def cache_split(
             # For forced-shard sampling, only flush the sampling storage;
             # topk can still accumulate if save_per_split_single_file is set.
             if force_shard_sampling and "sampling" in storage:
+                
+                raise Exception("storage branch not used")
+                
                 shard_path = os.path.join(
                     config.cache_dir,
                     f"sampling_{split_name}_shard{shard_idx:04d}.pt",
@@ -470,11 +473,18 @@ def cache_split(
                     "seq_len": config.seq_len,
                 }
                 save_payload(shard_path, full_logits_payload)
+                print(f"Flushing full logits shard {shard_idx} to {shard_path} with {full_logits_payload['input_ids'].shape[0]} samples...")
                 sampling_shard_paths.append(shard_path)
+                # delete storage to free up RAM and re-init empty storage for next shard
+                del storage["full_logits"]
+                #storage = init_storage("full_logits")
                 storage["full_logits"] = init_storage("full_logits")["full_logits"]
             # ==============================================================================================
             
             if not force_shard_sampling:
+                
+                raise Exception("storage branch not used")
+                
                 save_shard(storage, config, split_name, shard_idx)
                 storage = init_storage(config.mode)
 
