@@ -9,6 +9,7 @@ from tqdm import tqdm
 import argparse
 from src.models import load_teacher
 from src.data import get_dataloaders
+import gc
 
 
 @dataclass
@@ -477,6 +478,7 @@ def cache_split(
                 sampling_shard_paths.append(shard_path)
                 # delete storage to free up RAM and re-init empty storage for next shard
                 del storage["full_logits"]
+                gc.collect()
                 #storage = init_storage("full_logits")
                 storage["full_logits"] = init_storage("full_logits")["full_logits"]
             # ==============================================================================================
