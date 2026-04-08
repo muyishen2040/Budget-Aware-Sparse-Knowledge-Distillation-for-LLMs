@@ -27,7 +27,7 @@ class CacheConfig:
     # output
     cache_dir: str = "teacher_cache"
     save_per_split_single_file: bool = False   # if False, save shards instead
-    shard_size_batches: int = 50 #100             # used only when save_per_split_single_file=False
+    shard_size_batches: int = 10 #50 #100             # used only when save_per_split_single_file=False
 
     # top-k settings
     topk_k: int = 8
@@ -360,7 +360,7 @@ def cache_split(
         and config.sampling_num_draws >= 16
     )
     
-    # TURN OFF FORCED SHARDING 
+    # TURN ON FORCED SHARDING 
     #==============================================================================================
     assert force_shard_sampling == True, "Sharding is needed for full_logits mode"
     #==============================================================================================
