@@ -397,14 +397,14 @@ def cache_split(
     for batch in tqdm(dataloader, desc=f"Caching {split_name}"):
         
         # ==============================================================================================
-        # SKIP TO THE SHARDS THAT WE WANT TO PROCESS (19 AND ON FOR FULL LOGITS) AND ALSO LIMIT TO A CERTAIN NUMBER OF BATCHES FOR TESTING
-        if shard_idx < 19:  # skip the first 19 shards (0-18) to get to the full logits shards starting at shard 19
+        # SKIP TO THE SHARDS THAT WE WANT TO PROCESS (23 AND ON FOR FULL LOGITS) AND ALSO LIMIT TO A CERTAIN NUMBER OF BATCHES FOR TESTING
+        if shard_idx < 23:  # skip the first 23 shards (0-22) to get to the full logits shards starting at shard 23
             batch_counter += 1
             if batch_counter % config.shard_size_batches == 0:
                 shard_idx += 1
             continue
         
-        if shard_idx == 19:  # reset batch counter at the start of the first shard we want to process
+        if shard_idx == 23:  # reset batch counter at the start of the first shard we want to process
             print(f"REACHED SHARD {shard_idx}, BEGINNING DATA COLLECTION....")
             
         # =============================================================================================
@@ -509,7 +509,7 @@ def cache_split(
                 save_payload(shard_path, full_logits_payload)
                 print(f"Flushing full logits shard {shard_idx} to {shard_path} with {full_logits_payload['input_ids'].shape[0]} samples...")
                 sampling_shard_paths.append(shard_path)
-                time.sleep(20)  # 20 second delay to ensure file is fully written before upload, since these shards can be very large and we want to avoid any risk of trying to upload an incomplete file
+                time.sleep(10)  # 20 second delay to ensure file is fully written before upload, since these shards can be very large and we want to avoid any risk of trying to upload an incomplete file
                 # upload the full_logits_payload to HF hub immediately after saving each shard, since full logits shards can be very large and we want to avoid any risk of trying to upload an incomplete file if we wait until the end when we might have multiple shards ready to upload at once
                 print("Authenticating with Hugging Face Hub for upload...")
                 hf_api_key = os.getenv("HF_TOKEN")
@@ -517,6 +517,13 @@ def cache_split(
                 print(f"Uploading {shard_path} to Hugging Face Hub...")
                 push_to_hf_hub(shard_path)
                 print(f"Finished uploading {shard_path} to Hugging Face Hub.")
+                time.sleep(10)  # additional delay after upload to ensure everything is settled before we potentially start the next upload for the next shard
+                # once the shard is saved and uploaded, delete from disk
+                try:
+                    os.remove(shard_path)
+                    print(f"Deleted local shard file: {shard_path}")
+                except Exception as e:
+                    print(f"Error deleting local shard file {shard_path}: {e}. DELETION MAY HAVE TO BE DONE MANUALLY!")
                 # delete storage to free up RAM and re-init empty storage for next shard
                 del storage["full_logits"]
             #    gc.collect()
