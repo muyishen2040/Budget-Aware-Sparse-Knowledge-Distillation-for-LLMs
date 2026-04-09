@@ -12,6 +12,7 @@ from src.models import load_teacher
 from src.data import get_dataloaders
 import gc
 from huggingface_hub import HfApi
+from huggingface_hub import login
 
 # HF API instance for uploading cached shards to Hugging Face Hub
 HF_api = HfApi()
@@ -377,7 +378,7 @@ def cache_split(
     force_shard_sampling = (
         config.mode in ("sampling", "both", "full_logits")  # full_logits can also be large if seq_len and vocab are large
         and config.sampling_num_draws >= 16
-    )
+    ) # --> True
     
     # TURN ON FORCED SHARDING 
     #==============================================================================================
@@ -498,6 +499,9 @@ def cache_split(
                 sampling_shard_paths.append(shard_path)
                 time.sleep(20)  # 20 second delay to ensure file is fully written before upload, since these shards can be very large and we want to avoid any risk of trying to upload an incomplete file
                 # upload the shard to HF hub immediately after saving, since full logits shards can be very large and we don't want to risk them sitting on disk for too long
+                print("Authenticating with Hugging Face Hub for upload...")
+                hf_api_key = os.getenv("HF_TOKEN")
+                login(token=hf_api_key, add_to_git_credential=True)
                 print(f"Uploading {shard_path} to Hugging Face Hub...")
                 push_to_hf_hub(shard_path)
                 print(f"Finished uploading {shard_path} to Hugging Face Hub.")
@@ -545,6 +549,10 @@ def cache_split(
                 config.cache_dir,
                 f"full_logits_{split_name}_shard{shard_idx:04d}.pt",
             )
+            
+            print("Authenticating with Hugging Face Hub for upload...")
+            hf_api_key = os.getenv("HF_TOKEN")
+            login(token=hf_api_key, add_to_git_credential=True)
             print(f"Uploading {shard_path} to Hugging Face Hub...")
             push_to_hf_hub(shard_path)
             print(f"Finished uploading {shard_path} to Hugging Face Hub.")

@@ -80,7 +80,7 @@ def get_dataloaders(
     if val_split_name_resolved is not None:
         # Dedicated val split exists — load train and val independently.
         print(f"[data] Loading train split ({num_train_samples} samples)...")
-        train_dataset = load_dataset(hf_repo, hf_config, split=f"{train_split_name}[:{num_train_samples}]", trust_remote_code=True)
+        train_dataset = load_dataset(hf_repo, hf_config, split=f"{train_split_name}[:{num_train_samples}]", trust_remote_code=True) #takes the first n_samples from the train split
         print(f"[data] Loading val split ({num_val_samples} samples)...")
         val_dataset = load_dataset(val_hf_repo, val_hf_config, split=f"{val_split_name_resolved}[:{num_val_samples}]", trust_remote_code=True)
     else:
