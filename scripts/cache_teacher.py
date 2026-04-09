@@ -431,7 +431,7 @@ def cache_split(
         ) and (batch_counter % config.shard_size_batches == 0)
 
         # ==============================================================================================
-        assert config.shard_size_batches == 10
+        #assert config.shard_size_batches == 10
         
         if batch_counter % config.shard_size_batches == 0:
             assert should_shard == True, "Sharding should be forced on for sampling mode with num_draws >= 16 to avoid OOM, and save_per_split_single_file is ignored in this case. Please check the logic for should_shard if you see this assertion error."
