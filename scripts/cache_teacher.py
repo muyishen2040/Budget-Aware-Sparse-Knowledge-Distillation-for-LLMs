@@ -1,6 +1,6 @@
 import os
 from dataclasses import dataclass
-from time import time
+import time
 from typing import Literal, Optional, Dict, Any
 
 import torch
