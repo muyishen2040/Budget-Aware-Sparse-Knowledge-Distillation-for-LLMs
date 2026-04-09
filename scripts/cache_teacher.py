@@ -1,5 +1,6 @@
 import os
 from dataclasses import dataclass
+from time import time
 from typing import Literal, Optional, Dict, Any
 
 import torch
@@ -10,7 +11,10 @@ import argparse
 from src.models import load_teacher
 from src.data import get_dataloaders
 import gc
+from huggingface_hub import HfApi
 
+# HF API instance for uploading cached shards to Hugging Face Hub
+HF_api = HfApi()
 
 @dataclass
 class CacheConfig:
@@ -22,7 +26,7 @@ class CacheConfig:
 
     # data
     seq_len: int = 256
-    batch_size: int = 1  #4
+    batch_size: int = 4 #32
     num_train_samples: Optional[int] = 2000  # set None for full train split
 
     # output
@@ -266,6 +270,20 @@ def save_payload(path: str, payload: Dict[str, Any]) -> None:
     print(f"Saved: {path}")
 
 
+def push_to_hf_hub(local_path: str) -> None:
+    
+    if "train" in local_path:
+        split = "train"
+    elif "val" in local_path:
+        split = "val"
+        
+    HF_api.upload_file(
+        path_or_fileobj=local_path, # Local file path
+        path_in_repo=split, # Path in the repository
+        repo_id="jmcochrane/Sparse_KD_AE_Training_Data", # Repository name
+        repo_type="dataset" # Type: dataset, model, or space
+    )
+
 def make_output_paths(config: CacheConfig, split_name: str) -> Dict[str, str]:
     out = {}
     # ADD A PATH FOR FULL LOGITS CACHE
@@ -373,9 +391,9 @@ def cache_split(
     for batch in tqdm(dataloader, desc=f"Caching {split_name}"):
         
         # ==============================================================================================
-        if batch_counter >= 250:
-            print(f"Reached batch limit for testing: {batch_counter} batches processed. Stopping early.")
-            break
+#        if batch_counter >= 250:
+#            print(f"Reached batch limit for testing: {batch_counter} batches processed. Stopping early.")
+#            break
         # =============================================================================================
         
         input_ids = batch["input_ids"].to(device)
@@ -426,7 +444,7 @@ def cache_split(
         batch_counter += 1
 
         should_shard = (
-            (not config.save_per_split_single_file) #--> not(True) = False
+            (not config.save_per_split_single_file) 
             or force_shard_sampling                 # --> True
         ) and (batch_counter % config.shard_size_batches == 0)
 
@@ -478,6 +496,11 @@ def cache_split(
                 save_payload(shard_path, full_logits_payload)
                 print(f"Flushing full logits shard {shard_idx} to {shard_path} with {full_logits_payload['input_ids'].shape[0]} samples...")
                 sampling_shard_paths.append(shard_path)
+                time.sleep(20)  # 20 second delay to ensure file is fully written before upload, since these shards can be very large and we want to avoid any risk of trying to upload an incomplete file
+                # upload the shard to HF hub immediately after saving, since full logits shards can be very large and we don't want to risk them sitting on disk for too long
+                print(f"Uploading {shard_path} to Hugging Face Hub...")
+                push_to_hf_hub(shard_path)
+                print(f"Finished uploading {shard_path} to Hugging Face Hub.")
                 # delete storage to free up RAM and re-init empty storage for next shard
                 del storage["full_logits"]
             #    gc.collect()
@@ -503,6 +526,8 @@ def cache_split(
     #==============================================================================================
     if "full_logits" in storage and len(storage["full_logits"]["input_ids"]) > 0:
         if config.save_per_split_single_file:
+            
+            raise Exception("save_per_split_single_file should be false!")
             out_paths = make_output_paths(config, split_name)
             full_logits_payload = concat_storage(storage["full_logits"])
             full_logits_payload["meta"] = {
@@ -514,6 +539,15 @@ def cache_split(
             save_payload(out_paths["full_logits"], full_logits_payload)
         else:
             save_shard(storage, config, split_name, shard_idx)
+            # upload the final full logits shard to HF hub immediately after saving
+            time.sleep(20)  # 20 second delay to ensure file is fully written before upload, since full logits shards can be very large and we want to avoid any risk of trying to upload an incomplete file
+            shard_path = os.path.join(
+                config.cache_dir,
+                f"full_logits_{split_name}_shard{shard_idx:04d}.pt",
+            )
+            print(f"Uploading {shard_path} to Hugging Face Hub...")
+            push_to_hf_hub(shard_path)
+            print(f"Finished uploading {shard_path} to Hugging Face Hub.")
     # ==============================================================================================
     
     # Remaining topk (always single-file or normal shard)
