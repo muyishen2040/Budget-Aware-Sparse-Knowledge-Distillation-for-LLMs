@@ -281,7 +281,7 @@ def push_to_hf_hub(local_path) -> None:
     try:
         HF_api.upload_file(
             path_or_fileobj=local_path,
-            path_in_repo=split,
+            path_in_repo=os.path.join(split, os.path.basename(local_path)),
             repo_id="jmcochrane/Sparse_KD_AE_Training_Data",
             repo_type="dataset",
         )
@@ -315,12 +315,12 @@ def save_shard(
     #==============================================================================================
     if "full_logits" in storage:
         full_logits_payload = concat_storage(storage["full_logits"])
-#        full_logits_payload["meta"] = {
-#            "split": split_name,
-#            "cache_type": "full_logits",
-#            "temperature": config.temperature,
-#            "seq_len": config.seq_len,
-#        }
+        full_logits_payload["meta"] = {
+            "split": split_name,
+            "cache_type": "full_logits",
+            "temperature": config.temperature,
+            "seq_len": config.seq_len,
+        }
         save_payload(
             os.path.join(config.cache_dir, f"full_logits_{split_name}_shard{shard_idx:04d}.pt"),
             full_logits_payload,
@@ -493,12 +493,12 @@ def cache_split(
                     f"full_logits_{split_name}_shard{shard_idx:04d}.pt",
                 )
                 full_logits_payload = concat_storage(storage["full_logits"])
-#                full_logits_payload["meta"] = {
-#                    "split": split_name,
-#                    "cache_type": "full_logits",
-#                    "temperature": config.temperature,
-#                    "seq_len": config.seq_len,
-#                }
+                full_logits_payload["meta"] = {
+                    "split": split_name,
+                    "cache_type": "full_logits",
+                    "temperature": config.temperature,
+                    "seq_len": config.seq_len,
+                }
                 save_payload(shard_path, full_logits_payload)
                 print(f"Flushing full logits shard {shard_idx} to {shard_path} with {full_logits_payload['input_ids'].shape[0]} samples...")
                 sampling_shard_paths.append(shard_path)
