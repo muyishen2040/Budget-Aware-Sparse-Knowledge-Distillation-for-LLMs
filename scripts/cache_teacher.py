@@ -22,7 +22,7 @@ class CacheConfig:
 
     # data
     seq_len: int = 256
-    batch_size: int = 4
+    batch_size: int = 1  #4
     num_train_samples: Optional[int] = 2000  # set None for full train split
 
     # output
@@ -431,6 +431,8 @@ def cache_split(
         ) and (batch_counter % config.shard_size_batches == 0)
 
         # ==============================================================================================
+        assert config.shard_size_batches == 10
+        
         if batch_counter % config.shard_size_batches == 0:
             assert should_shard == True, "Sharding should be forced on for sampling mode with num_draws >= 16 to avoid OOM, and save_per_split_single_file is ignored in this case. Please check the logic for should_shard if you see this assertion error."
         # ==============================================================================================
@@ -478,9 +480,12 @@ def cache_split(
                 sampling_shard_paths.append(shard_path)
                 # delete storage to free up RAM and re-init empty storage for next shard
                 del storage["full_logits"]
-                gc.collect()
+            #    gc.collect()
                 #storage = init_storage("full_logits")
-                storage["full_logits"] = init_storage("full_logits")["full_logits"]
+                try:
+                    storage["full_logits"] = init_storage("full_logits")["full_logits"]
+                except Exception as e:
+                    print(f"Error initializing empty full_logits storage: {e}")
             # ==============================================================================================
             
             if not force_shard_sampling:
