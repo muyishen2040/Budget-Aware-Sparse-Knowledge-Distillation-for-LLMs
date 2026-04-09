@@ -10,12 +10,13 @@ from tqdm import tqdm
 import argparse
 from src.models import load_teacher
 from src.data import get_dataloaders
-import gc
-from huggingface_hub import HfApi
-from huggingface_hub import login
+import json
+from huggingface_hub import login, HfApi, HfFolder, create_repo, upload_file
+import os
+from datasets import Dataset
 
 # HF API instance for uploading cached shards to Hugging Face Hub
-HF_api = HfApi()
+#HF_api = HfApi()
 
 @dataclass
 class CacheConfig:
@@ -271,19 +272,32 @@ def save_payload(path: str, payload: Dict[str, Any]) -> None:
     print(f"Saved: {path}")
 
 
-def push_to_hf_hub(local_path: str) -> None:
+def push_to_hf_hub(local_path: str, data: Dict[str, Any]) -> None:
     
     if "train" in local_path:
         split = "train"
     elif "val" in local_path:
         split = "val"
-        
-    HF_api.upload_file(
-        path_or_fileobj=local_path, # Local file path
-        path_in_repo=split, # Path in the repository
-        repo_id="jmcochrane/Sparse_KD_AE_Training_Data", # Repository name
-        repo_type="dataset" # Type: dataset, model, or space
-    )
+    
+    # convert the data dictionary to a hf dataset and push to the hub
+    dataset = Dataset.from_dict(data)
+    
+    # push the dataset to the hub under the specified repo and path
+    try:
+        dataset.push_to_hub(
+        repo_id="jmcochrane/Sparse_KD_AE_Training_Data",
+        path_in_repo=f"{split}/{os.path.basename(local_path)}",
+        private=False,
+        )
+    except Exception as e:
+        print(f"Error uploading to Hugging Face Hub: {e}")
+    
+  #  HF_api.upload_file(
+  #      path_or_fileobj=local_path, # Local file path
+  #      path_in_repo=split, # Path in the repository
+  #      repo_id="jmcochrane/Sparse_KD_AE_Training_Data", # Repository name
+  #      repo_type="dataset" # Type: dataset, model, or space
+  #  )
 
 def make_output_paths(config: CacheConfig, split_name: str) -> Dict[str, str]:
     out = {}
@@ -498,12 +512,12 @@ def cache_split(
                 print(f"Flushing full logits shard {shard_idx} to {shard_path} with {full_logits_payload['input_ids'].shape[0]} samples...")
                 sampling_shard_paths.append(shard_path)
                 time.sleep(20)  # 20 second delay to ensure file is fully written before upload, since these shards can be very large and we want to avoid any risk of trying to upload an incomplete file
-                # upload the shard to HF hub immediately after saving, since full logits shards can be very large and we don't want to risk them sitting on disk for too long
+                # upload the full_logits_payload to HF hub immediately after saving each shard, since full logits shards can be very large and we want to avoid any risk of trying to upload an incomplete file if we wait until the end when we might have multiple shards ready to upload at once
                 print("Authenticating with Hugging Face Hub for upload...")
                 hf_api_key = os.getenv("HF_TOKEN")
                 login(token=hf_api_key, add_to_git_credential=True)
                 print(f"Uploading {shard_path} to Hugging Face Hub...")
-                push_to_hf_hub(shard_path)
+                push_to_hf_hub(shard_path, full_logits_payload)
                 print(f"Finished uploading {shard_path} to Hugging Face Hub.")
                 # delete storage to free up RAM and re-init empty storage for next shard
                 del storage["full_logits"]
@@ -554,7 +568,8 @@ def cache_split(
             hf_api_key = os.getenv("HF_TOKEN")
             login(token=hf_api_key, add_to_git_credential=True)
             print(f"Uploading {shard_path} to Hugging Face Hub...")
-            push_to_hf_hub(shard_path)
+            full_logits_payload = concat_storage(storage["full_logits"])
+            push_to_hf_hub(shard_path, full_logits_payload)
             print(f"Finished uploading {shard_path} to Hugging Face Hub.")
     # ==============================================================================================
     
