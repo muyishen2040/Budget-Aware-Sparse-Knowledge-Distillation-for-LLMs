@@ -11,12 +11,12 @@ import argparse
 from src.models import load_teacher
 from src.data import get_dataloaders
 import json
-from huggingface_hub import login
+from huggingface_hub import login, HfApi
 import os
 from datasets import Dataset
 
 # HF API instance for uploading cached shards to Hugging Face Hub
-#HF_api = HfApi()
+HF_api = HfApi()
 
 @dataclass
 class CacheConfig:
@@ -279,26 +279,29 @@ def push_to_hf_hub(local_path: str, data: Dict[str, Any]) -> None:
     elif "val" in local_path:
         split = "val"
     
-    # convert the data dictionary to a hf dataset and push to the hub
-    dataset = Dataset.from_dict(data)
-    
-    # push the dataset to the hub under the specified repo and path
-    try:
-        dataset.push_to_hub(
-        repo_id="jmcochrane/Sparse_KD_AE_Training_Data",
-        path_in_repo=f"{split}/{os.path.basename(local_path)}",
-        private=False,
-        )
+    # parse the data dict of tensors to json
+    json_data_name = local_path.replace(".pt", ".json")
+    try:        
+        with open(json_data_name, "w") as f:
+            json.dump(data, f, indent=4, default=lambda x: x.tolist() if isinstance(x, torch.Tensor) else x)
+        print(f"Saved JSON data to {json_data_name}")
     except Exception as e:
-        print(f"Error uploading to Hugging Face Hub: {e}")
-    
-  #  HF_api.upload_file(
-  #      path_or_fileobj=local_path, # Local file path
-  #      path_in_repo=split, # Path in the repository
-  #      repo_id="jmcochrane/Sparse_KD_AE_Training_Data", # Repository name
-  #      repo_type="dataset" # Type: dataset, model, or space
-  #  )
-
+        print(f"Error saving JSON metadata: {e}")
+        
+    # push the json data to HF hub as well, since the .pt files are too large to upload and share on HF hub, but the JSON metadata is small and can be useful for analysis and reproducibility
+    try:
+        HF_api.upload_file(
+            path_or_fileobj=json_data_name,
+            path_in_repo=split,
+            repo_id="jmcochrane/Sparse_KD_AE_Training_Data",
+            repo_type="dataset",
+            token=os.getenv("HF_TOKEN"),
+        )
+        
+    except Exception as e:
+        print(f"Error uploading JSON metadata to Hugging Face Hub: {e}")
+        
+        
 def make_output_paths(config: CacheConfig, split_name: str) -> Dict[str, str]:
     out = {}
     # ADD A PATH FOR FULL LOGITS CACHE
