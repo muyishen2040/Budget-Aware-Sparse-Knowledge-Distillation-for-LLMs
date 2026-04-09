@@ -405,8 +405,8 @@ def cache_split(
             continue
         
         if shard_idx == 19:  # reset batch counter at the start of the first shard we want to process
-            print(f"REACHED SHARD {shard_idx}, INITIATING EARLY STOPPING....")
-            return 
+            print(f"REACHED SHARD {shard_idx}, BEGINNING DATA COLLECTION....")
+            
         # =============================================================================================
         
         input_ids = batch["input_ids"].to(device)
