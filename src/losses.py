@@ -97,14 +97,14 @@ def compute_cached_topk_kd_loss(student_logits, topk_teacher_probs, topk_indices
     
     ce_loss = F.cross_entropy(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
     
-    shift_topk_teacher_probs = topk_teacher_probs[..., :-1, :].contiguous().float()
-    shift_topk_indices = topk_indices[..., :-1, :].contiguous()
+    shift_topk_teacher_probs = topk_teacher_probs[..., :-1, :].contiguous().float() # shape [B, T-1, K]
+    shift_topk_indices = topk_indices[..., :-1, :].contiguous() # shape [B, T-1, K]
     
     # Compute full log_softmax first to penalize non-topk probability mass
-    student_full_log_probs = F.log_softmax(shift_logits / temperature, dim=-1)
+    student_full_log_probs = F.log_softmax(shift_logits / temperature, dim=-1) # shape [B, T-1, V]
     
     # Gather student log_probs based on teacher's topk_indices
-    student_log_probs = torch.gather(student_full_log_probs, dim=-1, index=shift_topk_indices)
+    student_log_probs = torch.gather(student_full_log_probs, dim=-1, index=shift_topk_indices) # shape [B, T-1, K]
     
     # Renormalize teacher probabilities over the top-k support
     teacher_probs = shift_topk_teacher_probs / shift_topk_teacher_probs.sum(dim=-1, keepdim=True)

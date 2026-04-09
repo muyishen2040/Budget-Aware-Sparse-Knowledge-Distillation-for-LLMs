@@ -37,7 +37,7 @@ class CacheConfig:
     shard_size_batches: int = 10 #50 #100             # used only when save_per_split_single_file=False
 
     # top-k settings
-    topk_k: int = 8
+    topk_k: int = 16
 
     # random sampling KD settings
     sampling_num_draws: int = 50
