@@ -272,30 +272,18 @@ def save_payload(path: str, payload: Dict[str, Any]) -> None:
     print(f"Saved: {path}")
 
 
-def push_to_hf_hub(local_path: str, data: Dict[str, Any]) -> None:
+def push_to_hf_hub(local_path) -> None:
     
     if "train" in local_path:
         split = "train"
     elif "val" in local_path:
         split = "val"
-    
-    # parse the data dict of tensors to json
-    json_data_name = local_path.replace(".pt", ".json")
-    try:        
-        with open(json_data_name, "w") as f:
-            json.dump(data, f, indent=4, default=lambda x: x.tolist() if isinstance(x, torch.Tensor) else x)
-        print(f"Saved JSON data to {json_data_name}")
-    except Exception as e:
-        print(f"Error saving JSON metadata: {e}")
-        
-    # push the json data to HF hub as well, since the .pt files are too large to upload and share on HF hub, but the JSON metadata is small and can be useful for analysis and reproducibility
     try:
         HF_api.upload_file(
-            path_or_fileobj=json_data_name,
+            path_or_fileobj=local_path,
             path_in_repo=split,
             repo_id="jmcochrane/Sparse_KD_AE_Training_Data",
             repo_type="dataset",
-            token=os.getenv("HF_TOKEN"),
         )
         
     except Exception as e:
@@ -520,7 +508,7 @@ def cache_split(
                 hf_api_key = os.getenv("HF_TOKEN")
                 login(token=hf_api_key, add_to_git_credential=True)
                 print(f"Uploading {shard_path} to Hugging Face Hub...")
-                push_to_hf_hub(shard_path, full_logits_payload)
+                push_to_hf_hub(shard_path)
                 print(f"Finished uploading {shard_path} to Hugging Face Hub.")
                 # delete storage to free up RAM and re-init empty storage for next shard
                 del storage["full_logits"]
@@ -572,7 +560,7 @@ def cache_split(
             login(token=hf_api_key, add_to_git_credential=True)
             print(f"Uploading {shard_path} to Hugging Face Hub...")
             full_logits_payload = concat_storage(storage["full_logits"])
-            push_to_hf_hub(shard_path, full_logits_payload)
+            push_to_hf_hub(shard_path)
             print(f"Finished uploading {shard_path} to Hugging Face Hub.")
     # ==============================================================================================
     
