@@ -85,8 +85,8 @@ def main():
             
             # Subset the cached top-k probabilities to exactly args.k
             k = args.k
-            topk_probs = batch["topk_probs"][..., :k].to(input_device)
-            topk_ids = batch["topk_ids"][..., :k].to(input_device)
+            topk_probs = batch["topk_probs"][..., :k].to(input_device) # shape [B, T, K]
+            topk_ids = batch["topk_ids"][..., :k].to(input_device)    # shape [B, T, K]
             
             student_outputs = student(input_ids=input_ids, attention_mask=attention_mask)
             student_logits = student_outputs.logits

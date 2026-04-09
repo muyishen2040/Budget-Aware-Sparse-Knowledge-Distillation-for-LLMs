@@ -28,7 +28,7 @@ class CacheConfig:
 
     # data
     seq_len: int = 256
-    batch_size: int = 4 #32
+    batch_size: int = 8 #4 #32
     num_train_samples: Optional[int] = 2000  # set None for full train split
 
     # output
@@ -88,7 +88,7 @@ def build_full_logits_softlabels(
     probs = F.softmax(logits / temperature, dim=-1).to(dtype=probs_dtype)
     
     # find the k most probable tokens at each position for logging/debugging (not used in loss)
-    topk_probs, topk_ids = torch.topk(probs, k=k, dim=-1)
+    topk_probs, topk_ids = torch.topk(probs, k=k, dim=-1) # shape [B, T, K]
     
     return {
         "probs": probs.cpu(),  # [B, T, V]
@@ -397,9 +397,16 @@ def cache_split(
     for batch in tqdm(dataloader, desc=f"Caching {split_name}"):
         
         # ==============================================================================================
-#        if batch_counter >= 250:
-#            print(f"Reached batch limit for testing: {batch_counter} batches processed. Stopping early.")
-#            break
+        # SKIP TO THE SHARDS THAT WE WANT TO PROCESS (19 AND ON FOR FULL LOGITS) AND ALSO LIMIT TO A CERTAIN NUMBER OF BATCHES FOR TESTING
+        if shard_idx < 19:  # skip the first 19 shards (0-18) to get to the full logits shards starting at shard 19
+            batch_counter += 1
+            if batch_counter % config.shard_size_batches == 0:
+                shard_idx += 1
+            continue
+        
+        if shard_idx == 19:  # reset batch counter at the start of the first shard we want to process
+            print(f"REACHED SHARD {shard_idx}, INITIATING EARLY STOPPING....")
+            return 
         # =============================================================================================
         
         input_ids = batch["input_ids"].to(device)
