@@ -324,12 +324,12 @@ def save_shard(
     #==============================================================================================
     if "full_logits" in storage:
         full_logits_payload = concat_storage(storage["full_logits"])
-        full_logits_payload["meta"] = {
-            "split": split_name,
-            "cache_type": "full_logits",
-            "temperature": config.temperature,
-            "seq_len": config.seq_len,
-        }
+#        full_logits_payload["meta"] = {
+#            "split": split_name,
+#            "cache_type": "full_logits",
+#            "temperature": config.temperature,
+#            "seq_len": config.seq_len,
+#        }
         save_payload(
             os.path.join(config.cache_dir, f"full_logits_{split_name}_shard{shard_idx:04d}.pt"),
             full_logits_payload,
@@ -502,12 +502,12 @@ def cache_split(
                     f"full_logits_{split_name}_shard{shard_idx:04d}.pt",
                 )
                 full_logits_payload = concat_storage(storage["full_logits"])
-                full_logits_payload["meta"] = {
-                    "split": split_name,
-                    "cache_type": "full_logits",
-                    "temperature": config.temperature,
-                    "seq_len": config.seq_len,
-                }
+#                full_logits_payload["meta"] = {
+#                    "split": split_name,
+#                    "cache_type": "full_logits",
+#                    "temperature": config.temperature,
+#                    "seq_len": config.seq_len,
+#                }
                 save_payload(shard_path, full_logits_payload)
                 print(f"Flushing full logits shard {shard_idx} to {shard_path} with {full_logits_payload['input_ids'].shape[0]} samples...")
                 sampling_shard_paths.append(shard_path)
