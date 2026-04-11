@@ -419,18 +419,18 @@ def cache_split(
 
     for batch in tqdm(dataloader, desc=f"Caching {split_name}"):
         
- #       # ==============================================================================================
- #       # SKIP TO THE SHARDS THAT WE WANT TO PROCESS (40 AND ON FOR FULL LOGITS) AND ALSO LIMIT TO A CERTAIN NUMBER OF BATCHES FOR TESTING
- #       if shard_idx < 40:  # skip the first 40 shards (0-39) to get to the full logits shards starting at shard 40
- #           batch_counter += 1
- #           if batch_counter % config.shard_size_batches == 0:
- #               shard_idx += 1
- #           continue
- #       
- #       if shard_idx == 40:  # reset batch counter at the start of the first shard we want to process
- #           print(f"REACHED SHARD {shard_idx}, BEGINNING DATA COLLECTION....")
- #           
- #       # =============================================================================================
+        # ==============================================================================================
+        # SKIP TO THE SHARDS THAT WE WANT TO PROCESS (40 AND ON FOR FULL LOGITS) AND ALSO LIMIT TO A CERTAIN NUMBER OF BATCHES FOR TESTING
+        if shard_idx < 4:  # skip the first 4 shards (0-3) to get to the full logits shards starting at shard 4
+            batch_counter += 1
+            if batch_counter % config.shard_size_batches == 0:
+                shard_idx += 1
+            continue
+        
+        if shard_idx == 4:  # reset batch counter at the start of the first shard we want to process
+            print(f"REACHED SHARD {shard_idx}, BEGINNING DATA COLLECTION....")
+            
+        # =============================================================================================
         
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
