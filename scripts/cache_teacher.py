@@ -14,6 +14,7 @@ import json
 from huggingface_hub import login, HfApi
 import os
 from datasets import Dataset
+import shutil
 
 # HF API instance for uploading cached shards to Hugging Face Hub
 #HF_api = HfApi()
@@ -271,11 +272,23 @@ def concat_storage(data_dict: Dict[str, list]) -> Dict[str, Any]:
 
 
 def save_payload(path: str, payload: Dict[str, Any]) -> None:
-#    ensure_dir(os.path.dirname(path))
+    '''
+    Save from RAM to disk.
+    '''
+    ensure_dir(os.path.dirname(path))
     torch.save(payload, path)
     print(f"Saved: {path}")
 
 
+def copy_disk_to_drive(local_path: str, drive_path: str) -> None:
+    '''
+    Copy from disk to Gdrive (for use in Colab). We use shutil.copy here which is faster than torch.save to Gdrive and avoids GPU sync issues.
+    '''
+    #ensure_dir(os.path.dirname(drive_path))
+    shutil.copy(local_path, drive_path)
+    print(f"Copied from {local_path} to {drive_path}")
+    
+    
 #def push_to_hf_hub(local_path) -> None:
 #    
 #    if "train" in local_path:
@@ -503,10 +516,13 @@ def cache_split(
             # ==============================================================================================
             if force_shard_sampling and "full_logits" in storage:
                 
-#                shard_path = os.path.join(
-#                    config.cache_dir,
-#                    f"full_logits_{split_name}_shard{shard_idx:04d}.pt",
-#                )
+                # disk path
+                shard_path = os.path.join(
+                    config.cache_dir,
+                    f"full_logits_{split_name}_shard{shard_idx:04d}.pt",
+                )
+                
+                # gdrive path
                 gdrive_path = os.path.join(GDRIVE_PATH, f"full_logits_{split_name}_shard{shard_idx:04d}.pt")
                 full_logits_payload = concat_storage(storage["full_logits"])
                 full_logits_payload["meta"] = {
@@ -515,27 +531,28 @@ def cache_split(
                     "temperature": config.temperature,
                     "seq_len": config.seq_len,
                 }
-                # ***** WRITE THE PAYLOAD DATA TO MOUNTED GDRIVE
-                save_payload(gdrive_path, full_logits_payload)
-                print(f"Writing full_logits shard {shard_idx} to {gdrive_path} with {full_logits_payload['input_ids'].shape[0]} samples...")
-                sampling_shard_paths.append(gdrive_path)
-                time.sleep(5)  # 5 second delay to ensure file is fully written before upload, since these shards can be very large and we want to avoid any risk of trying to upload an incomplete file
-#                # upload the full_logits_payload to HF hub immediately after saving each shard, since full logits shards can be very large and we want to avoid any risk of trying to upload an incomplete file if we wait until the end when we might have multiple shards ready to upload at once
-#                print("Authenticating with Hugging Face Hub for upload...")
-#                hf_api_key = os.getenv("HF_TOKEN")
+                # SAVE TO DISK FIRST
+                save_payload(shard_path, full_logits_payload)
+                print(f"Writing full_logits shard {shard_idx} to DISK at {shard_path} with {full_logits_payload['input_ids'].shape[0]} samples...")
+                sampling_shard_paths.append(shard_path)
+                time.sleep(3)  # 3 second delay to ensure file is fully written 
+                
+                # THEN COPY TO GDRIVE
+                copy_disk_to_drive(shard_path, gdrive_path)
+                print(f"Copying full_logits shard {shard_idx} to Gdrive at {gdrive_path}. Attempting to delete local shard file to free up disk space...")
+                # once the shard is saved to disk and copied to Gdrive, delete from local disk
+                try:
+                    os.remove(shard_path)
+                    print(f"Deleted local shard file: {shard_path}")
+                except Exception as e:
+                    print(f"Error deleting local shard file {shard_path}: {e}. DELETION MAY HAVE TO BE DONE MANUALLY!")
 #                login(token=hf_api_key, add_to_git_credential=True)
 #                print(f"Uploading {shard_path} to Hugging Face Hub...")
 #                push_to_hf_hub(shard_path)
 #                print(f"Finished uploading {shard_path} to Hugging Face Hub.")
 #                time.sleep(10)  # additional delay after upload to ensure everything is settled before we potentially start the next upload for the next shard
-                print(f"Finished processing shard {shard_idx} for full_logits cache. Attempting to delete local shard file to free up disk space...")
-#                # once the shard is saved and uploaded, delete from disk
-#                try:
-#                    os.remove(shard_path)
-#                    print(f"Deleted local shard file: {shard_path}")
-#                except Exception as e:
-#                    print(f"Error deleting local shard file {shard_path}: {e}. DELETION MAY HAVE TO BE DONE MANUALLY!")
-
+                print(f"Finished processing shard {shard_idx} for full_logits cache. Attempting to delete storage variable to free up RAM for next shard...")
+#                
                 # delete storage variable to free up RAM and re-init empty storage for next shard
                 del storage["full_logits"]
                 # re-initialize empty storage for full_logits to continue accumulating the next shard's worth of data
