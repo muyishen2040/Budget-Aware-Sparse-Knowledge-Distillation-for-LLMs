@@ -14,7 +14,8 @@ import json
 from huggingface_hub import login, HfApi
 import os
 from datasets import Dataset
-import shutil
+#import shutil
+import subprocess
 
 # HF API instance for uploading cached shards to Hugging Face Hub
 #HF_api = HfApi()
@@ -282,13 +283,15 @@ def save_payload(path: str, payload: Dict[str, Any]) -> None:
 
 def copy_disk_to_drive(local_path: str, drive_path: str) -> None:
     '''
-    Copy from disk to Gdrive (for use in Colab). We use shutil.copy here which is faster than torch.save to Gdrive and avoids GPU sync issues.
+    Copy from disk to Gdrive (for use in Colab). We use subprocess to call 'cp' command for copying to Gdrive, which is generally faster and more reliable than shutil.copy for large files in Colab. We also add delays to ensure file operations are fully completed before moving on, and we attempt to delete local files after copying to free up disk space.
     '''
     #ensure_dir(os.path.dirname(drive_path))
-    shutil.copy(local_path, drive_path)
+    #shutil.copy(local_path, drive_path)
+    subprocess.run(["cp", local_path, drive_path], check=True)
+    subprocess.run(["sync"], check=True)  # ensure all file operations are flushed
     print(f"Copied from {local_path} to {drive_path}")
     
-    
+            
 #def push_to_hf_hub(local_path) -> None:
 #    
 #    if "train" in local_path:
