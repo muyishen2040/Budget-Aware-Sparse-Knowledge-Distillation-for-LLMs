@@ -20,6 +20,7 @@ from datasets import Dataset
 
 # LOAD GDRIVE PATH AS ENV VARIABLE
 GDRIVE_PATH = os.getenv("GDRIVE_PATH", '/content/drive/MyDrive/ANLP_AutoEncoder_TrainingData')  # default to a local path if env variable is not set
+os.makedirs(GDRIVE_PATH, exist_ok=True)
 
 @dataclass
 class CacheConfig:
