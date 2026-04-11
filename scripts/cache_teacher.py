@@ -270,7 +270,7 @@ def concat_storage(data_dict: Dict[str, list]) -> Dict[str, Any]:
 
 
 def save_payload(path: str, payload: Dict[str, Any]) -> None:
-    ensure_dir(os.path.dirname(path))
+#    ensure_dir(os.path.dirname(path))
     torch.save(payload, path)
     print(f"Saved: {path}")
 
