@@ -16,7 +16,10 @@ import os
 from datasets import Dataset
 
 # HF API instance for uploading cached shards to Hugging Face Hub
-HF_api = HfApi()
+#HF_api = HfApi()
+
+# LOAD GDRIVE PATH AS ENV VARIABLE
+GDRIVE_PATH = os.getenv("GDRIVE_PATH", '/content/drive/MyDrive/ANLP_AutoEncoder_TrainingData')  # default to a local path if env variable is not set
 
 @dataclass
 class CacheConfig:
@@ -272,22 +275,22 @@ def save_payload(path: str, payload: Dict[str, Any]) -> None:
     print(f"Saved: {path}")
 
 
-def push_to_hf_hub(local_path) -> None:
-    
-    if "train" in local_path:
-        split = "train"
-    elif "val" in local_path:
-        split = "val"
-    try:
-        HF_api.upload_file(
-            path_or_fileobj=local_path,
-            path_in_repo=os.path.join(split, os.path.basename(local_path)),
-            repo_id="jmcochrane/Sparse_KD_AE_Training_Data",
-            repo_type="dataset",
-        )
-        
-    except Exception as e:
-        print(f"Error uploading JSON metadata to Hugging Face Hub: {e}")
+#def push_to_hf_hub(local_path) -> None:
+#    
+#    if "train" in local_path:
+#        split = "train"
+#    elif "val" in local_path:
+#        split = "val"
+#    try:
+#        HF_api.upload_file(
+#            path_or_fileobj=local_path,
+#            path_in_repo=os.path.join(split, os.path.basename(local_path)),
+#            repo_id="jmcochrane/Sparse_KD_AE_Training_Data",
+#            repo_type="dataset",
+#        )
+#        
+#    except Exception as e:
+#        print(f"Error uploading JSON metadata to Hugging Face Hub: {e}")
         
         
 def make_output_paths(config: CacheConfig, split_name: str) -> Dict[str, str]:
@@ -321,8 +324,11 @@ def save_shard(
             "temperature": config.temperature,
             "seq_len": config.seq_len,
         }
+        
+        # ***** WRITE THE PAYLOAD DATA TO MOUNTED GDRIVE *****
+        gdrive_shard_path = os.path.join(GDRIVE_PATH, f"full_logits_{split_name}_shard{shard_idx:04d}.pt")
         save_payload(
-            os.path.join(config.cache_dir, f"full_logits_{split_name}_shard{shard_idx:04d}.pt"),
+            gdrive_shard_path,
             full_logits_payload,
         )
     #==============================================================================================    
@@ -396,18 +402,18 @@ def cache_split(
 
     for batch in tqdm(dataloader, desc=f"Caching {split_name}"):
         
-        # ==============================================================================================
-        # SKIP TO THE SHARDS THAT WE WANT TO PROCESS (40 AND ON FOR FULL LOGITS) AND ALSO LIMIT TO A CERTAIN NUMBER OF BATCHES FOR TESTING
-        if shard_idx < 40:  # skip the first 40 shards (0-39) to get to the full logits shards starting at shard 40
-            batch_counter += 1
-            if batch_counter % config.shard_size_batches == 0:
-                shard_idx += 1
-            continue
-        
-        if shard_idx == 40:  # reset batch counter at the start of the first shard we want to process
-            print(f"REACHED SHARD {shard_idx}, BEGINNING DATA COLLECTION....")
-            
-        # =============================================================================================
+ #       # ==============================================================================================
+ #       # SKIP TO THE SHARDS THAT WE WANT TO PROCESS (40 AND ON FOR FULL LOGITS) AND ALSO LIMIT TO A CERTAIN NUMBER OF BATCHES FOR TESTING
+ #       if shard_idx < 40:  # skip the first 40 shards (0-39) to get to the full logits shards starting at shard 40
+ #           batch_counter += 1
+ #           if batch_counter % config.shard_size_batches == 0:
+ #               shard_idx += 1
+ #           continue
+ #       
+ #       if shard_idx == 40:  # reset batch counter at the start of the first shard we want to process
+ #           print(f"REACHED SHARD {shard_idx}, BEGINNING DATA COLLECTION....")
+ #           
+ #       # =============================================================================================
         
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
@@ -495,10 +501,12 @@ def cache_split(
             # MAKE A BRANCH FOR FULL LOGITS SHARDING IF MODE IS FULL_LOGITS
             # ==============================================================================================
             if force_shard_sampling and "full_logits" in storage:
-                shard_path = os.path.join(
-                    config.cache_dir,
-                    f"full_logits_{split_name}_shard{shard_idx:04d}.pt",
-                )
+                
+#                shard_path = os.path.join(
+#                    config.cache_dir,
+#                    f"full_logits_{split_name}_shard{shard_idx:04d}.pt",
+#                )
+                gdrive_path = os.path.join(GDRIVE_PATH, f"full_logits_{split_name}_shard{shard_idx:04d}.pt")
                 full_logits_payload = concat_storage(storage["full_logits"])
                 full_logits_payload["meta"] = {
                     "split": split_name,
@@ -506,28 +514,30 @@ def cache_split(
                     "temperature": config.temperature,
                     "seq_len": config.seq_len,
                 }
-                save_payload(shard_path, full_logits_payload)
-                print(f"Flushing full logits shard {shard_idx} to {shard_path} with {full_logits_payload['input_ids'].shape[0]} samples...")
-                sampling_shard_paths.append(shard_path)
-                time.sleep(10)  # 20 second delay to ensure file is fully written before upload, since these shards can be very large and we want to avoid any risk of trying to upload an incomplete file
-                # upload the full_logits_payload to HF hub immediately after saving each shard, since full logits shards can be very large and we want to avoid any risk of trying to upload an incomplete file if we wait until the end when we might have multiple shards ready to upload at once
-                print("Authenticating with Hugging Face Hub for upload...")
-                hf_api_key = os.getenv("HF_TOKEN")
-                login(token=hf_api_key, add_to_git_credential=True)
-                print(f"Uploading {shard_path} to Hugging Face Hub...")
-                push_to_hf_hub(shard_path)
-                print(f"Finished uploading {shard_path} to Hugging Face Hub.")
-                time.sleep(10)  # additional delay after upload to ensure everything is settled before we potentially start the next upload for the next shard
-                # once the shard is saved and uploaded, delete from disk
-                try:
-                    os.remove(shard_path)
-                    print(f"Deleted local shard file: {shard_path}")
-                except Exception as e:
-                    print(f"Error deleting local shard file {shard_path}: {e}. DELETION MAY HAVE TO BE DONE MANUALLY!")
-                # delete storage to free up RAM and re-init empty storage for next shard
+                # ***** WRITE THE PAYLOAD DATA TO MOUNTED GDRIVE
+                save_payload(gdrive_path, full_logits_payload)
+                print(f"Writing full_logits shard {shard_idx} to {gdrive_path} with {full_logits_payload['input_ids'].shape[0]} samples...")
+                sampling_shard_paths.append(gdrive_path)
+                time.sleep(5)  # 5 second delay to ensure file is fully written before upload, since these shards can be very large and we want to avoid any risk of trying to upload an incomplete file
+#                # upload the full_logits_payload to HF hub immediately after saving each shard, since full logits shards can be very large and we want to avoid any risk of trying to upload an incomplete file if we wait until the end when we might have multiple shards ready to upload at once
+#                print("Authenticating with Hugging Face Hub for upload...")
+#                hf_api_key = os.getenv("HF_TOKEN")
+#                login(token=hf_api_key, add_to_git_credential=True)
+#                print(f"Uploading {shard_path} to Hugging Face Hub...")
+#                push_to_hf_hub(shard_path)
+#                print(f"Finished uploading {shard_path} to Hugging Face Hub.")
+#                time.sleep(10)  # additional delay after upload to ensure everything is settled before we potentially start the next upload for the next shard
+                print(f"Finished processing shard {shard_idx} for full_logits cache. Attempting to delete local shard file to free up disk space...")
+#                # once the shard is saved and uploaded, delete from disk
+#                try:
+#                    os.remove(shard_path)
+#                    print(f"Deleted local shard file: {shard_path}")
+#                except Exception as e:
+#                    print(f"Error deleting local shard file {shard_path}: {e}. DELETION MAY HAVE TO BE DONE MANUALLY!")
+
+                # delete storage variable to free up RAM and re-init empty storage for next shard
                 del storage["full_logits"]
-            #    gc.collect()
-                #storage = init_storage("full_logits")
+                # re-initialize empty storage for full_logits to continue accumulating the next shard's worth of data
                 try:
                     storage["full_logits"] = init_storage("full_logits")["full_logits"]
                 except Exception as e:
@@ -546,6 +556,7 @@ def cache_split(
     # ── Flush any remaining batches ──────────────────────────────────────────
 
     # SAVE FULL LOGITS CACHE TO OUTPUT FILE
+    # Remaining full_logits (always sharded, never single-file since it would be too large to fit in RAM)
     #==============================================================================================
     if "full_logits" in storage and len(storage["full_logits"]["input_ids"]) > 0:
         if config.save_per_split_single_file:
@@ -563,19 +574,19 @@ def cache_split(
         else:
             save_shard(storage, config, split_name, shard_idx)
             # upload the final full logits shard to HF hub immediately after saving
-            time.sleep(20)  # 20 second delay to ensure file is fully written before upload, since full logits shards can be very large and we want to avoid any risk of trying to upload an incomplete file
-            shard_path = os.path.join(
-                config.cache_dir,
-                f"full_logits_{split_name}_shard{shard_idx:04d}.pt",
-            )
+            time.sleep(5)  # 5 second delay to ensure file is fully written before upload, since full logits shards can be very large and we want to avoid any risk of trying to upload an incomplete file
+#            shard_path = os.path.join(
+#                config.cache_dir,
+#                f"full_logits_{split_name}_shard{shard_idx:04d}.pt",
+#            )
             
-            print("Authenticating with Hugging Face Hub for upload...")
-            hf_api_key = os.getenv("HF_TOKEN")
-            login(token=hf_api_key, add_to_git_credential=True)
-            print(f"Uploading {shard_path} to Hugging Face Hub...")
-            full_logits_payload = concat_storage(storage["full_logits"])
-            push_to_hf_hub(shard_path)
-            print(f"Finished uploading {shard_path} to Hugging Face Hub.")
+#            print("Authenticating with Hugging Face Hub for upload...")
+#            hf_api_key = os.getenv("HF_TOKEN")
+#            login(token=hf_api_key, add_to_git_credential=True)
+#            print(f"Uploading {shard_path} to Hugging Face Hub...")
+#            full_logits_payload = concat_storage(storage["full_logits"])
+#            push_to_hf_hub(shard_path)
+#            print(f"Finished uploading {shard_path} to Hugging Face Hub.")
     # ==============================================================================================
     
     # Remaining topk (always single-file or normal shard)
