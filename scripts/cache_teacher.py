@@ -599,7 +599,7 @@ def cache_split(
                         print("-----")
                 
                 print(f"ATTEMPTING TO WRITE SHARD {shard_idx} TO PARQUET AT {shard_path}")
-                write_payload_to_parquet(storage=full_logits_payload, parquet_path=shard_path, mode_key="full_logits")
+                write_payload_to_parquet(full_logits_payload, shard_path, mode_key="full_logits")
                 
                 
                 print("EARLY STOP!")
