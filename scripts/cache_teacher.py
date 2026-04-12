@@ -19,7 +19,7 @@ import subprocess
 import pandas as pd
 
 # HF API instance for uploading cached shards to Hugging Face Hub
-#HF_api = HfApi()
+HF_api = HfApi()
 
 # LOAD GDRIVE PATH AS ENV VARIABLE
 GDRIVE_PATH = os.getenv("GDRIVE_PATH", '/content/drive/MyDrive/ANLP_AutoEncoder_TrainingData')  # default to a local path if env variable is not set
@@ -281,34 +281,19 @@ def save_payload(path: str, payload: Dict[str, Any]) -> None:
     torch.save(payload, path)
     print(f"Saved: {path}")
 
-def write_storage_to_parquet(storage: Dict[str, list], parquet_path: str, mode_key="full_logits") -> None:
+
+
+def write_payload_to_parquet(storage_dict: Dict[str, list], parquet_path: str, mode_key="full_logits") -> None:
     '''
     Convert a storage Dict[str, list] to a .parquet file
     '''
-    # unpack each key of the storage dict into a list of tensors, then concatenate along dim 0 to get a single tensor per key. 
-    # Note here that we are assuming that each key maps to a list (we do not use concat_storage() here because we want to keep the data as tensors for easy saving to parquet, and concat_storage() moves everything to CPU which can cause OOM for large caches
-    # Then we convert each tensor to a numpy array and build a dictionary of numpy arrays, which we can then convert to a Hugging Face Dataset and save as parquet.
-    
-    # (1) access the inner dict of the storage (e.g. storage["topk"]) and concatenate each list of tensors into a single tensor
-    storage_dict = storage[mode_key]
-    
-    # (2) verify that all keys map to lists of equal length
+    # (1) verify that all keys map to lists of equal length
     len_vlist = len(storage_dict["input_ids"])
     for key, value in storage_dict.items():
         if len(value) != len_vlist:
             raise ValueError(f"All keys in storage_dict must have the same length. Key '{key}' has length {len(value)}, expected {len_vlist}.")
     
-    '''
-    storage["full_logits"] = {
-            "input_ids": [],
-            "attention_mask": [],
-            "labels": [],
-            "probs": [],  # store full teacher probs (after temperature scaling) here
-            "topk_ids": [],
-            "topk_probs": [],
-        }
-    '''
-    # (3) now, we can iterate over the index of each key list, extract the relevant tensors, and fill in a pandas df row-by-row
+    # (2) now, we can iterate over the index of each key list, extract the relevant tensors, and fill in a pandas df row-by-row
     df_rows = []
     for idx in range(len_vlist):
         
@@ -331,14 +316,13 @@ def write_storage_to_parquet(storage: Dict[str, list], parquet_path: str, mode_k
         # (c) fill in the row dict for this index
         df_rows.append({"input_ids":input_ids_list, "attention_mask":attention_mask_list, "labels":labels_list, "probs":probs_list, "topk_ids":topk_ids_list, "topk_probs":topk_probs_list})
         
-        # (4) convert the list of rows to a pandas df and then to .parquet
-        df = pd.DataFrame(df_rows)
-        
-        try:
-            df.to_parquet(parquet_path, engine="pyarrow", index=False)
-            print(f"Parquet file saved to: {parquet_path}")
-        except Exception as e:
-            print(f"Error writing Parquet file: {e}")
+    # (3) convert the list of rows to a pandas df and then to .parquet
+    df = pd.DataFrame(df_rows)
+    try:
+        df.to_parquet(parquet_path, engine="pyarrow", index=False)
+        print(f"Parquet file saved to: {parquet_path}")
+    except Exception as e:
+        print(f"Error writing Parquet file: {e}")
     
     
     
@@ -353,22 +337,25 @@ def write_storage_to_parquet(storage: Dict[str, list], parquet_path: str, mode_k
 #    print(f"Copied from {local_path} to {drive_path}")
     
             
-#def push_to_hf_hub(local_path) -> None:
-#    
-#    if "train" in local_path:
-#        split = "train"
-#    elif "val" in local_path:
-#        split = "val"
-#    try:
-#        HF_api.upload_file(
-#            path_or_fileobj=local_path,
-#            path_in_repo=os.path.join(split, os.path.basename(local_path)),
-#            repo_id="jmcochrane/Sparse_KD_AE_Training_Data",
-#            repo_type="dataset",
-#        )
-#        
-#    except Exception as e:
-#        print(f"Error uploading JSON metadata to Hugging Face Hub: {e}")
+def push_to_hf_hub(local_path) -> None:
+    '''
+    Push a local .parquet file to HF hub.
+    '''
+    
+    if "train" in local_path:
+        split = "train"
+    elif "val" in local_path:
+        split = "val"
+    try:
+        HF_api.upload_file(
+            path_or_fileobj=local_path,
+            path_in_repo=os.path.join(split, os.path.basename(local_path)),
+            repo_id="jmcochrane/Sparse_KD_AE_Training_Data",
+            repo_type="dataset",
+        )
+        
+    except Exception as e:
+        print(f"Error uploading JSON metadata to Hugging Face Hub: {e}")
         
         
 def make_output_paths(config: CacheConfig, split_name: str) -> Dict[str, str]:
@@ -497,13 +484,13 @@ def cache_split(
         attention_mask = batch["attention_mask"].to(device)
         labels = batch["labels"].to(device)
         
-        print("--> input_ids shape:", input_ids.shape)
-        print("--> attention_mask shape:", attention_mask.shape)
-        print("--> labels shape:", labels.shape)
+#        print("--> input_ids shape:", input_ids.shape)
+#        print("--> attention_mask shape:", attention_mask.shape)
+#        print("--> labels shape:", labels.shape)
 
         logits = teacher_forward(teacher, input_ids, attention_mask)
         
-        print("--> logits shape:", logits.shape)
+#        print("--> logits shape:", logits.shape)
         
         # *** FULL LOGIT CACHE WOULD BE HERE  ***
         #==============================================================================================
@@ -589,26 +576,29 @@ def cache_split(
                 # disk path
                 shard_path = os.path.join(
                     config.cache_dir,
-                    f"full_logits_{split_name}_shard{shard_idx:04d}.pt",
+                    f"full_logits_{split_name}_shard{shard_idx:04d}.parquet",
                 )
                 
                 # gdrive path
 #                gdrive_path = os.path.join(GDRIVE_PATH, f"full_logits_{split_name}_shard{shard_idx:04d}.pt")
                 full_logits_payload = storage["full_logits"] #concat_storage(storage["full_logits"])
-                full_logits_payload["meta"] = {
-                    "split": split_name,
-                    "cache_type": "full_logits",
-                    "temperature": config.temperature,
-                    "seq_len": config.seq_len,
-                }
+#                full_logits_payload["meta"] = {
+#                    "split": split_name,
+#                    "cache_type": "full_logits",
+#                    "temperature": config.temperature,
+#                    "seq_len": config.seq_len,
+#                }
                 
-                print("storage keys (excluding meta)...")
+                print(" printing the storage keys (excluding meta)...")
                 for key in full_logits_payload.keys():
                     if key != "meta":
                         print(f"KEY NAME: {key}")
                         print(f"num tensors in list: {len(full_logits_payload[key])}")
                         print(f"tensor shapes: {[tensor.shape for tensor in full_logits_payload[key]]}")
                         print("-----")
+                
+                print(f"ATTEMPTING TO WRITE SHARD {shard_idx} TO PARQUET AT {shard_path}")
+                write_payload_to_parquet(storage=full_logits_payload, parquet_path=shard_path, mode_key="full_logits")
                 
                 
                 print("EARLY STOP!")
