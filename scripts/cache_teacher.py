@@ -606,7 +606,7 @@ def cache_split(
 #                        print(f"tensor shapes: {[tensor.shape for tensor in full_logits_payload[key]]}")
 #                        print("-----")
                 
-                print(f"ATTEMPTING TO WRITE SHARD {shard_idx} AS A PARQUET FILE TO DISK at {shard_path} with {full_logits_payload['input_ids'].shape[0]} samples...")
+                print(f"ATTEMPTING TO WRITE SHARD {shard_idx} AS A PARQUET FILE TO DISK at {shard_path}")
                 payload2parquet(full_logits_payload, shard_path, mode_key="full_logits")
                 
                 print("SLEEPING....")
