@@ -19,6 +19,9 @@ import subprocess
 import pandas as pd
 from torch.utils.data import TensorDataset, DataLoader
 
+SEQ_LEN = 256
+VOCAB_SIZE = 50304
+
 @dataclass
 class CacheConfig:
     # which caches to create: "topk", "sampling", or "both"
@@ -86,28 +89,12 @@ def build_full_logits_softlabels(
         }
     """
     # find full output prob dist over all batches, seq length, and vocab tokens
-    probs = F.softmax(logits / temperature, dim=-1).to(dtype=probs_dtype)
+    probs_3d = F.softmax(logits / temperature, dim=-1).to(dtype=probs_dtype)
     
-    # find the k most probable tokens at each position for logging/debugging (not used in loss)
-    #topk_probs, topk_ids = torch.topk(probs, k=k, dim=-1) # shape [B, T, K]
-    
-    return {
-        "probs": probs.cpu(),  # [B, T, V]
-    }
-
-
-def init_storage(mode: str) -> Dict[str, Dict[str, list]]:
-    storage: Dict[str, Dict[str, list]] = {}
-
-    if mode == "full_logits":
-        storage["full_logits"] = {"probs": []}
-    else:
-        raise ValueError(f"Invalid mode: {mode}")
-
-    return storage
-
-
-
+    # reshape [B,T,V] --> [B*T, V] for easier storage as a parquet file and for training the AE
+    B, T, V = probs_3d.shape
+    probs = probs_3d.view(B * T, V)
+    return probs
 
 
 def cache_split(
@@ -127,26 +114,17 @@ def cache_split(
     print(f"\nCaching split: {split_name}")
     print(f"Mode: {config.mode}")
 
-    # For large sampling budgets, always shard to avoid OOM
-    force_shard_sampling = (
-        config.mode in ("sampling", "both", "full_logits")  # full_logits can also be large if seq_len and vocab are large
-        and config.sampling_num_draws >= 16
-    ) # --> True
-    
-    # TURN ON FORCED SHARDING 
-    #==============================================================================================
-    assert force_shard_sampling == True, "Sharding is needed for integrated AE training."
-    #==============================================================================================
-    storage = init_storage(config.mode)
+    # PRE-ALLOCATE THE TRAINING DATA BUFFER
+    buffer_list = [torch.randn(config.batch_size, SEQ_LEN, VOCAB_SIZE, device="cuda") for _ in range(config.shard_size_batches)]
+    final_shape = (len(buffer_list) * buffer_list[0].size(0), buffer_list[0].size(1))
+    data_buffer = torch.empty(final_shape, device="cuda")
     shard_idx = 0
     batch_counter = 0
-    sampling_shard_paths: list = []  # track shard paths for later merge
+    buffer_offset = 0
 
     for batch in tqdm(dataloader, desc=f"Caching {split_name}"):
-        
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
-#        labels = batch["labels"].to(device)
         logits = teacher_forward(teacher, input_ids, attention_mask)
 
         if config.mode == "full_logits":
@@ -156,40 +134,45 @@ def cache_split(
                 temperature=config.temperature,
                 probs_dtype=config.probs_dtype,
             )
-            storage["full_logits"]["probs"].append(full_logits_out["probs"])  #append probs tensor to running list for current shard
+            #storage["full_logits"]["probs"].append(full_logits_out["probs"])  #append probs tensor to running list for current shard
+            data_buffer[buffer_offset:buffer_offset + full_logits_out.size(0), :] = full_logits_out
+            buffer_offset += full_logits_out.size(0)
          
         else:
             raise NotImplementedError("AE Integrated Training is only supported for full_logit mode!")
         batch_counter += 1
 
-        should_shard = (
-            (not config.save_per_split_single_file) 
-            or force_shard_sampling                 # --> True
-        ) and (batch_counter % config.shard_size_batches == 0)
+        dump_buffer = (batch_counter % config.shard_size_batches == 0)
         
-        if batch_counter % config.shard_size_batches == 0:
-            assert should_shard == True, "Sharding should be forced on for sampling mode with num_draws >= 16 to avoid OOM, and save_per_split_single_file is ignored in this case. Please check the logic for should_shard if you see this assertion error."
-        if should_shard:
-            if force_shard_sampling and "full_logits" in storage:
+        if dump_buffer:
+            
+            print(f"Buffer filled with {buffer_offset} samples. Starting integrated training on this buffer before saving...")
+            dataset = TensorDataset(data_buffer, data_buffer) # AE dataset where the labels are the same as the inputs since it's an autoencoder
+            dataloader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True)
                 
-                full_logits_payload = torch.stack(storage["full_logits"]['probs'])  # list of [B, T, V] tensors
-                
-                dataset = TensorDataset(full_logits_payload, full_logits_payload) # AE dataset where the labels are the same as the inputs since it's an autoencoder
-                dataloader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True)
-                
-                print(f"Starting integrated training on shard {shard_idx} with {full_logits_payload.shape[0]} samples...")
-                for batch_features, batch_labels in dataloader:
-                    print(f"Batch features shape: {batch_features.shape} | Batch labels shape: {batch_labels.shape}")
+            print(f"Starting integrated training on shard {shard_idx} with {data_buffer.shape[0]} samples...")
+            for batch_features, batch_labels in dataloader:
+                print(f"Batch features shape: {batch_features.shape} | Batch labels shape: {batch_labels.shape}")
                     # Here you would add your training code that takes batch_features as input and tries to reconstruct
                
                # after the training loop finishes, we can delete the full_logits from storage to free up RAM before processing the next shard
-                try:
-                    del dataloader
-                    del dataset
-                    del storage["full_logits"]
-                    print(f"Deleted full_logits from storage to free up RAM after training on shard {shard_idx}.")
-                except Exception as e:
-                    print(f"Error deleting full_logits from storage: {e}. You may need to free up RAM manually.")
+            try:
+                del dataloader
+                del dataset
+                del data_buffer
+                print(f"Deleted full_logits from storage to free up RAM after training on shard {shard_idx}.")
+            except Exception as e:
+                print(f"Error deleting full_logits from storage: {e}. You may need to free up RAM manually.")
+            
+            print("ATTEMPTING TO ALLOCATE NEW BUFFER FOR NEXT SHARD...")
+            try:
+                buffer_list = [torch.randn(config.batch_size, SEQ_LEN, VOCAB_SIZE, device="cuda") for _ in range(config.shard_size_batches)]
+                final_shape = (len(buffer_list) * buffer_list[0].size(0), buffer_list[0].size(1))
+                data_buffer = torch.empty(final_shape, device="cuda")
+                buffer_offset = 0
+                print("Successfully allocated new buffer for next shard.")
+            except Exception as e:
+                print(f"Error allocating new buffer for next shard: {e}. You may need to free up RAM manually before proceeding with the next shard.")
                     
                 print("EARLY EXIT FOR TESTING - REMOVE THIS AFTER INTEGRATING TRAINING CODE")
                 return
