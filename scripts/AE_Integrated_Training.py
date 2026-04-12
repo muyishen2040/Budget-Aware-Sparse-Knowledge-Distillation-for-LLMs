@@ -148,7 +148,7 @@ def cache_split(
             
             print(f"Buffer filled with {buffer_offset} samples. Starting integrated training on this buffer before saving...")
             data_buffer_3d = data_buffer.view(-1, SEQ_LEN, VOCAB_SIZE) # reshape back to [B', T, V] for training where B' = B*len(buffer_list) is the total number of samples in the buffer.
-            
+            print(f"TRAINING DATA SHAPE = {data_buffer_3d.shape}")
             dataset = TensorDataset(data_buffer_3d, data_buffer_3d) # AE dataset where the labels are the same as the inputs since it's an autoencoder
             dataloader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True)
                 
