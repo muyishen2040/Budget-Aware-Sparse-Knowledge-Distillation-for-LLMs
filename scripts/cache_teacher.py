@@ -283,7 +283,7 @@ def save_payload(path: str, payload: Dict[str, Any]) -> None:
 
 
 
-def write_payload_to_parquet(storage_dict: Dict[str, list], parquet_path: str, mode_key="full_logits") -> None:
+def payload2dataset(storage_dict: Dict[str, list], parquet_path: str, mode_key="full_logits") -> None:
     '''
     Convert a storage Dict[str, list] to a .parquet file
     '''
@@ -316,16 +316,17 @@ def write_payload_to_parquet(storage_dict: Dict[str, list], parquet_path: str, m
         # (c) fill in the row dict for this index
         df_rows.append({"input_ids":input_ids_list, "attention_mask":attention_mask_list, "labels":labels_list, "probs":probs_list, "topk_ids":topk_ids_list, "topk_probs":topk_probs_list})
         
-    # (3) convert the list of rows to a pandas df and then to .parquet
-    df = pd.DataFrame(df_rows)
-    try:
-        print(f"Attempting to write DataFrame to Parquet at {parquet_path}...")
-        df.to_parquet(parquet_path, engine="pyarrow", index=False)
-        print(f"Parquet file saved to: {parquet_path}")
-    except Exception as e:
-        print(f"Error writing Parquet file: {e}")
+    # (3) convert the list of rows to HF dataset
+    hf_dataset = Dataset.from_list(df_rows)
+#    df = pd.DataFrame(df_rows)
+#    try:
+#        print(f"Attempting to write DataFrame to Parquet at {parquet_path}...")
+#        df.to_parquet(parquet_path, engine="pyarrow", index=False)
+#        print(f"Parquet file saved to: {parquet_path}")
+#    except Exception as e:
+#        print(f"Error writing Parquet file: {e}")
     
-    
+    return hf_dataset
     
 #def copy_disk_to_drive(local_path: str, drive_path: str) -> None:
 #    '''
@@ -338,27 +339,22 @@ def write_payload_to_parquet(storage_dict: Dict[str, list], parquet_path: str, m
 #    print(f"Copied from {local_path} to {drive_path}")
     
             
-def push_to_hf_hub(local_path) -> None:
+def push_to_hf_hub(dataset) -> None:
     '''
-    Push a local .parquet file to HF hub.
+    Push a HF dataset to the hub.
     '''
+    dataset.push_to_hub(repo_id="jmcochrane/Sparse_KD_AE_Training_Data_Stream", repo_type="dataset")
     
-#    if "train" in local_path:
-#        split = "train"
-#    elif "val" in local_path:
-#        split = "val"
-#    else:
-#        split = "train"
-    try:
-        HF_api.upload_file(
-            path_or_fileobj=local_path,
-            path_in_repo=os.path.basename(local_path), #os.path.join(split, os.path.basename(local_path)),
-            repo_id="jmcochrane/Sparse_KD_AE_Training_Data_Stream",
-            repo_type="dataset",
-        )
-        
-    except Exception as e:
-        print(f"Error uploading JSON metadata to Hugging Face Hub: {e}")
+#    try:
+#        HF_api.upload_file(
+#            path_or_fileobj=local_path,
+#            path_in_repo=os.path.basename(local_path), #os.path.join(split, os.path.basename(local_path)),
+#            repo_id="jmcochrane/Sparse_KD_AE_Training_Data_Stream",
+#            repo_type="dataset",
+#        )
+#        
+#    except Exception as e:
+#        print(f"Error uploading JSON metadata to Hugging Face Hub: {e}")
         
         
 def make_output_paths(config: CacheConfig, split_name: str) -> Dict[str, str]:
@@ -592,16 +588,16 @@ def cache_split(
 #                    "seq_len": config.seq_len,
 #                }
                 
-                print(" printing the storage keys (excluding meta)...")
-                for key in full_logits_payload.keys():
-                    if key != "meta":
-                        print(f"KEY NAME: {key}")
-                        print(f"num tensors in list: {len(full_logits_payload[key])}")
-                        print(f"tensor shapes: {[tensor.shape for tensor in full_logits_payload[key]]}")
-                        print("-----")
+#                print(" printing the storage keys (excluding meta)...")
+#                for key in full_logits_payload.keys():
+#                    if key != "meta":
+#                        print(f"KEY NAME: {key}")
+#                        print(f"num tensors in list: {len(full_logits_payload[key])}")
+#                        print(f"tensor shapes: {[tensor.shape for tensor in full_logits_payload[key]]}")
+#                        print("-----")
                 
-                print(f"ATTEMPTING TO WRITE SHARD {shard_idx} TO PARQUET AT {shard_path}")
-                write_payload_to_parquet(full_logits_payload, shard_path, mode_key="full_logits")
+                print(f"ATTEMPTING TO WRITE SHARD {shard_idx} AS A HF DATASET")
+                hf_ds = payload2dataset(full_logits_payload, shard_path, mode_key="full_logits")
                 
                 print("SLEEPING....")
                 time.sleep(30)  # 30 second delay to ensure file is fully written before upload, since full logits shards can be very large and we want to avoid any risk of trying to upload an incomplete file
@@ -610,7 +606,7 @@ def cache_split(
                 hf_api_key = os.getenv("HF_TOKEN")
                 login(token=hf_api_key, add_to_git_credential=True)
                 print(f"Uploading {shard_path} to Hugging Face Hub...")
-                push_to_hf_hub(shard_path)
+                push_to_hf_hub(hf_ds)
                 print(f"Finished uploading {shard_path} to Hugging Face Hub.")
                 time.sleep(10)  # additional delay after upload to ensure everything is settled before we
                 # delete storage variable to free up RAM and re-init empty storage for next shard
@@ -625,7 +621,7 @@ def cache_split(
                     os.remove(shard_path)
                     print(f"Deleted local shard file: {shard_path}")
                 except Exception as e:
-                    print(f"Error deleting local shard file {shard_path}: {e}. DELETION MAY HAVE TO BE DONE MANUALLY!")
+                    print(f"Error deleting local shard file {shard_path}: {e}.")
                     
                     
                 print("EARLY STOP!")
