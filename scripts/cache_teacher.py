@@ -343,14 +343,16 @@ def push_to_hf_hub(local_path) -> None:
     Push a local .parquet file to HF hub.
     '''
     
-    if "train" in local_path:
-        split = "train"
-    elif "val" in local_path:
-        split = "val"
+#    if "train" in local_path:
+#        split = "train"
+#    elif "val" in local_path:
+#        split = "val"
+#    else:
+#        split = "train"
     try:
         HF_api.upload_file(
             path_or_fileobj=local_path,
-            path_in_repo=os.path.join(split, os.path.basename(local_path)),
+            path_in_repo=os.path.basename(local_path), #os.path.join(split, os.path.basename(local_path)),
             repo_id="jmcochrane/Sparse_KD_AE_Training_Data",
             repo_type="dataset",
         )
@@ -601,7 +603,16 @@ def cache_split(
                 print(f"ATTEMPTING TO WRITE SHARD {shard_idx} TO PARQUET AT {shard_path}")
                 write_payload_to_parquet(full_logits_payload, shard_path, mode_key="full_logits")
                 
-                
+                print("SLEEPING....")
+                time.sleep(30)  # 30 second delay to ensure file is fully written before upload, since full logits shards can be very large and we want to avoid any risk of trying to upload an incomplete file
+                # authenticate with HF hub and upload
+                print("Authenticating with Hugging Face Hub for upload...")
+                hf_api_key = os.getenv("HF_TOKEN")
+                login(token=hf_api_key, add_to_git_credential=True)
+                print(f"Uploading {shard_path} to Hugging Face Hub...")
+                push_to_hf_hub(shard_path)
+                print(f"Finished uploading {shard_path} to Hugging Face Hub.")
+                time.sleep(10)  # additional delay after upload to ensure everything is settled before we
                 print("EARLY STOP!")
                 break
                 
@@ -775,7 +786,7 @@ Dataset keys (for --dataset):
         num_train_samples=args.num_train_samples if args.num_train_samples > 0 else None,
         cache_dir=args.cache_dir,
         save_per_split_single_file=True,
-        shard_size_batches=50, #100
+        shard_size_batches=40, #50, #100
         topk_k=args.topk_k,
         sampling_num_draws=args.sampling_num_draws,
         temperature=args.temperature,
