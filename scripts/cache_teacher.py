@@ -283,7 +283,7 @@ def save_payload(path: str, payload: Dict[str, Any]) -> None:
 
 
 
-def payload2dataset(storage_dict: Dict[str, list], parquet_path: str, mode_key="full_logits") -> None:
+def payload2parquet(storage_dict: Dict[str, list], parquet_path: str, mode_key="full_logits") -> None:
     '''
     Convert a storage Dict[str, list] to a .parquet file
     '''
@@ -317,16 +317,16 @@ def payload2dataset(storage_dict: Dict[str, list], parquet_path: str, mode_key="
         df_rows.append({"input_ids":input_ids_list, "attention_mask":attention_mask_list, "labels":labels_list, "probs":probs_list, "topk_ids":topk_ids_list, "topk_probs":topk_probs_list})
         
     # (3) convert the list of rows to HF dataset
-    hf_dataset = Dataset.from_list(df_rows)
-#    df = pd.DataFrame(df_rows)
-#    try:
-#        print(f"Attempting to write DataFrame to Parquet at {parquet_path}...")
-#        df.to_parquet(parquet_path, engine="pyarrow", index=False)
-#        print(f"Parquet file saved to: {parquet_path}")
-#    except Exception as e:
-#        print(f"Error writing Parquet file: {e}")
+    #hf_dataset = Dataset.from_list(df_rows)
+    df = pd.DataFrame(df_rows)
+    try:
+        print(f"Attempting to write DataFrame to Parquet at {parquet_path}...")
+        df.to_parquet(parquet_path, engine="pyarrow", index=False)
+        print(f"Parquet file saved to: {parquet_path}")
+    except Exception as e:
+        print(f"Error writing Parquet file: {e}")
     
-    return hf_dataset
+#    return hf_dataset
     
 #def copy_disk_to_drive(local_path: str, drive_path: str) -> None:
 #    '''
@@ -339,22 +339,22 @@ def payload2dataset(storage_dict: Dict[str, list], parquet_path: str, mode_key="
 #    print(f"Copied from {local_path} to {drive_path}")
     
             
-def push_to_hf_hub(dataset) -> None:
+def push_to_hf_hub(local_path) -> None:
     '''
     Push a HF dataset to the hub.
     '''
-    dataset.push_to_hub(repo_id="jmcochrane/Sparse_KD_AE_Training_Data_Stream", repo_type="dataset")
+#    dataset.push_to_hub(repo_id="jmcochrane/Sparse_KD_AE_Training_Data_Stream", repo_type="dataset")
     
-#    try:
-#        HF_api.upload_file(
-#            path_or_fileobj=local_path,
-#            path_in_repo=os.path.basename(local_path), #os.path.join(split, os.path.basename(local_path)),
-#            repo_id="jmcochrane/Sparse_KD_AE_Training_Data_Stream",
-#            repo_type="dataset",
-#        )
-#        
-#    except Exception as e:
-#        print(f"Error uploading JSON metadata to Hugging Face Hub: {e}")
+    try:
+        HF_api.upload_file(
+            path_or_fileobj=local_path,
+            path_in_repo=os.path.basename(local_path), #os.path.join(split, os.path.basename(local_path)),
+            repo_id="jmcochrane/Sparse_KD_AE_Training_Data_Stream",
+            repo_type="dataset",
+        )
+        
+    except Exception as e:
+        print(f"Error uploading JSON metadata to Hugging Face Hub: {e}")
         
         
 def make_output_paths(config: CacheConfig, split_name: str) -> Dict[str, str]:
@@ -381,20 +381,30 @@ def save_shard(
     # ADD A BRANCH FOR SAVING FULL LOGITS SHARD
     #==============================================================================================
     if "full_logits" in storage:
-        full_logits_payload = concat_storage(storage["full_logits"])
-        full_logits_payload["meta"] = {
-            "split": split_name,
-            "cache_type": "full_logits",
-            "temperature": config.temperature,
-            "seq_len": config.seq_len,
-        }
+        full_logits_payload = storage["full_logits"] #concat_storage(storage["full_logits"])
+        # convert the payload to a Hugging Face Dataset (in-memory, no saving yet)
+        hf_ds = payload2dataset(full_logits_payload, shard_path="", mode_key="full_logits")  
+        # push to hf hub
+        push_to_hf_hub(hf_ds)
+        try:
+            del hf_ds  # free up RAM immediately after upload
+            del storage["full_logits"]  # free up RAM by deleting the full logits storage after saving since it can be very large
+        except Exception as e:
+            print(f"Error deleting full logits storage from RAM: {e}. You may need to free up RAM manually.")
         
-        # ***** WRITE THE PAYLOAD DATA TO MOUNTED GDRIVE *****
-        gdrive_shard_path = os.path.join(GDRIVE_PATH, f"full_logits_{split_name}_shard{shard_idx:04d}.pt")
-        save_payload(
-            gdrive_shard_path,
-            full_logits_payload,
-        )
+#        full_logits_payload["meta"] = {
+#            "split": split_name,
+#            "cache_type": "full_logits",
+#            "temperature": config.temperature,
+#            "seq_len": config.seq_len,
+#        }
+#        
+#        # ***** WRITE THE PAYLOAD DATA TO MOUNTED GDRIVE *****
+#        gdrive_shard_path = os.path.join(GDRIVE_PATH, f"full_logits_{split_name}_shard{shard_idx:04d}.pt")
+#        save_payload(
+#            gdrive_shard_path,
+#            full_logits_payload,
+#        )
     #==============================================================================================    
     elif "topk" in storage:
         topk_payload = concat_storage(storage["topk"])
@@ -596,21 +606,25 @@ def cache_split(
 #                        print(f"tensor shapes: {[tensor.shape for tensor in full_logits_payload[key]]}")
 #                        print("-----")
                 
-                print(f"ATTEMPTING TO WRITE SHARD {shard_idx} AS A HF DATASET")
-                hf_ds = payload2dataset(full_logits_payload, shard_path, mode_key="full_logits")
+                print(f"ATTEMPTING TO WRITE SHARD {shard_idx} AS A PARQUET FILE TO DISK at {shard_path} with {full_logits_payload['input_ids'].shape[0]} samples...")
+                payload2parquet(full_logits_payload, shard_path, mode_key="full_logits")
                 
                 print("SLEEPING....")
-                time.sleep(30)  # 30 second delay to ensure file is fully written before upload, since full logits shards can be very large and we want to avoid any risk of trying to upload an incomplete file
+                time.sleep(15)  # 15 second delay to ensure file is fully written before upload, since full logits shards can be very large and we want to avoid any risk of trying to upload an incomplete file
                 # authenticate with HF hub and upload
                 print("Authenticating with Hugging Face Hub for upload...")
                 hf_api_key = os.getenv("HF_TOKEN")
                 login(token=hf_api_key, add_to_git_credential=True)
                 print(f"Uploading {shard_path} to Hugging Face Hub...")
-                push_to_hf_hub(hf_ds)
+                push_to_hf_hub(shard_path)
                 print(f"Finished uploading {shard_path} to Hugging Face Hub.")
                 time.sleep(10)  # additional delay after upload to ensure everything is settled before we
                 # delete storage variable to free up RAM and re-init empty storage for next shard
-                del storage["full_logits"]
+                try:
+               #     del hf_ds  # free up RAM immediately after upload
+                    del storage["full_logits"]
+                except Exception as e:
+                    print(f"Error deleting full logits storage from RAM: {e}. You may need to free up RAM manually.")
                 # re-initialize empty storage for full_logits to continue accumulating the next shard's worth of data
                 try:
                     storage["full_logits"] = init_storage("full_logits")["full_logits"]
