@@ -632,8 +632,11 @@ def cache_split(
                     print(f"Error initializing empty full_logits storage: {e}")
                 # once the shard is saved to disk and copied to Gdrive, delete from local disk
                 try:
+                    print(f"Attempting to delete local shard file {shard_path} to free up disk space...")
                     os.remove(shard_path)
                     print(f"Deleted local shard file: {shard_path}")
+                    print("Sleeping for 5 seconds after deleting local shard file...")
+                    time.sleep(5)
                 except Exception as e:
                     print(f"Error deleting local shard file {shard_path}: {e}.")
                     
