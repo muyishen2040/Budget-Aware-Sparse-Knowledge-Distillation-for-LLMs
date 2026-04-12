@@ -353,7 +353,7 @@ def push_to_hf_hub(local_path) -> None:
         HF_api.upload_file(
             path_or_fileobj=local_path,
             path_in_repo=os.path.basename(local_path), #os.path.join(split, os.path.basename(local_path)),
-            repo_id="jmcochrane/Sparse_KD_AE_Training_Data",
+            repo_id="jmcochrane/Sparse_KD_AE_Training_Data_Stream",
             repo_type="dataset",
         )
         
@@ -613,6 +613,21 @@ def cache_split(
                 push_to_hf_hub(shard_path)
                 print(f"Finished uploading {shard_path} to Hugging Face Hub.")
                 time.sleep(10)  # additional delay after upload to ensure everything is settled before we
+                # delete storage variable to free up RAM and re-init empty storage for next shard
+                del storage["full_logits"]
+                # re-initialize empty storage for full_logits to continue accumulating the next shard's worth of data
+                try:
+                    storage["full_logits"] = init_storage("full_logits")["full_logits"]
+                except Exception as e:
+                    print(f"Error initializing empty full_logits storage: {e}")
+                # once the shard is saved to disk and copied to Gdrive, delete from local disk
+                try:
+                    os.remove(shard_path)
+                    print(f"Deleted local shard file: {shard_path}")
+                except Exception as e:
+                    print(f"Error deleting local shard file {shard_path}: {e}. DELETION MAY HAVE TO BE DONE MANUALLY!")
+                    
+                    
                 print("EARLY STOP!")
                 break
                 
@@ -638,13 +653,8 @@ def cache_split(
 #                time.sleep(10)  # additional delay after upload to ensure everything is settled before we potentially start the next upload for the next shard
 #                print(f"Finished processing shard {shard_idx} for full_logits cache. Attempting to delete storage variable to free up RAM for next shard...")
 #                
-#                # delete storage variable to free up RAM and re-init empty storage for next shard
-#                del storage["full_logits"]
-#                # re-initialize empty storage for full_logits to continue accumulating the next shard's worth of data
-#                try:
-#                    storage["full_logits"] = init_storage("full_logits")["full_logits"]
-#                except Exception as e:
-#                    print(f"Error initializing empty full_logits storage: {e}")
+
+#                
             # ==============================================================================================
             
             if not force_shard_sampling:
