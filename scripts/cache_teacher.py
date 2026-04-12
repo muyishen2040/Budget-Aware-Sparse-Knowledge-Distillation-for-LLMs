@@ -16,6 +16,7 @@ import os
 from datasets import Dataset
 #import shutil
 import subprocess
+import pandas as pd
 
 # HF API instance for uploading cached shards to Hugging Face Hub
 #HF_api = HfApi()
@@ -276,20 +277,80 @@ def save_payload(path: str, payload: Dict[str, Any]) -> None:
     '''
     Save from RAM to disk.
     '''
-    ensure_dir(os.path.dirname(path))
+#    ensure_dir(os.path.dirname(path))
     torch.save(payload, path)
     print(f"Saved: {path}")
 
-
-def copy_disk_to_drive(local_path: str, drive_path: str) -> None:
+def write_storage_to_parquet(storage: Dict[str, list], parquet_path: str, mode_key="full_logits") -> None:
     '''
-    Copy from disk to Gdrive (for use in Colab). We use subprocess to call 'cp' command for copying to Gdrive, which is generally faster and more reliable than shutil.copy for large files in Colab. We also add delays to ensure file operations are fully completed before moving on, and we attempt to delete local files after copying to free up disk space.
+    Convert a storage Dict[str, list] to a .parquet file
     '''
-    #ensure_dir(os.path.dirname(drive_path))
-    #shutil.copy(local_path, drive_path)
-    subprocess.run(["cp", local_path, drive_path], check=True)
-    subprocess.run(["sync"], check=True)  # ensure all file operations are flushed
-    print(f"Copied from {local_path} to {drive_path}")
+    # unpack each key of the storage dict into a list of tensors, then concatenate along dim 0 to get a single tensor per key. 
+    # Note here that we are assuming that each key maps to a list (we do not use concat_storage() here because we want to keep the data as tensors for easy saving to parquet, and concat_storage() moves everything to CPU which can cause OOM for large caches
+    # Then we convert each tensor to a numpy array and build a dictionary of numpy arrays, which we can then convert to a Hugging Face Dataset and save as parquet.
+    
+    # (1) access the inner dict of the storage (e.g. storage["topk"]) and concatenate each list of tensors into a single tensor
+    storage_dict = storage[mode_key]
+    
+    # (2) verify that all keys map to lists of equal length
+    len_vlist = len(storage_dict["input_ids"])
+    for key, value in storage_dict.items():
+        if len(value) != len_vlist:
+            raise ValueError(f"All keys in storage_dict must have the same length. Key '{key}' has length {len(value)}, expected {len_vlist}.")
+    
+    '''
+    storage["full_logits"] = {
+            "input_ids": [],
+            "attention_mask": [],
+            "labels": [],
+            "probs": [],  # store full teacher probs (after temperature scaling) here
+            "topk_ids": [],
+            "topk_probs": [],
+        }
+    '''
+    # (3) now, we can iterate over the index of each key list, extract the relevant tensors, and fill in a pandas df row-by-row
+    df_rows = []
+    for idx in range(len_vlist):
+        
+        # (a) extract the relevant tensors for this index
+        input_id_tensor = storage_dict["input_ids"][idx]
+        attention_mask_tensor = storage_dict["attention_mask"][idx]
+        labels_tensor = storage_dict["labels"][idx]
+        probs_tensor = storage_dict['probs'][idx]
+        topk_ids_tensor = storage_dict['topk_ids'][idx]
+        topk_probs_tensor = storage_dict['topk_probs'][idx]
+        
+        # (b) convert each tensor to a flat list
+        input_ids_list = torch.flatten(input_id_tensor).detach().cpu().tolist() # size [seq_len] --> list of token ids
+        attention_mask_list = torch.flatten(attention_mask_tensor).detach().cpu().tolist() # size [seq_len] --> list of 0s and 1s
+        labels_list = torch.flatten(labels_tensor).detach().cpu().tolist() # size [seq_len] --> list of token ids with -100 for padding
+        probs_list = torch.flatten(probs_tensor).detach().cpu().tolist() # tensor [B, T, V] --> list of shape [B*T*V] of probabilities
+        topk_ids_list = torch.flatten(topk_ids_tensor).detach().cpu().tolist() # tensor [B, T, K] --> list of shape [B*T*K] of all topk token ids in the tensor
+        topk_probs_list = torch.flatten(topk_probs_tensor).detach().cpu().tolist() # tensor [B, T, K] --> list of shape [B*T*K] of all topk probabilities
+        
+        # (c) fill in the row dict for this index
+        df_rows.append({"input_ids":input_ids_list, "attention_mask":attention_mask_list, "labels":labels_list, "probs":probs_list, "topk_ids":topk_ids_list, "topk_probs":topk_probs_list})
+        
+        # (4) convert the list of rows to a pandas df and then to .parquet
+        df = pd.DataFrame(df_rows)
+        
+        try:
+            df.to_parquet(parquet_path, engine="pyarrow", index=False)
+            print(f"Parquet file saved to: {parquet_path}")
+        except Exception as e:
+            print(f"Error writing Parquet file: {e}")
+    
+    
+    
+#def copy_disk_to_drive(local_path: str, drive_path: str) -> None:
+#    '''
+#    Copy from disk to Gdrive (for use in Colab). We use subprocess to call 'cp' command for copying to Gdrive, which is generally faster and more reliable than shutil.copy for large files in Colab. We also add delays to ensure file operations are fully completed before moving on, and we attempt to delete local files after copying to free up disk space.
+#    '''
+#    #ensure_dir(os.path.dirname(drive_path))
+#    #shutil.copy(local_path, drive_path)
+#    subprocess.run(["cp", local_path, drive_path], check=True)
+#    subprocess.run(["sync"], check=True)  # ensure all file operations are flushed
+#    print(f"Copied from {local_path} to {drive_path}")
     
             
 #def push_to_hf_hub(local_path) -> None:
@@ -421,22 +482,28 @@ def cache_split(
         
         # ==============================================================================================
         # SKIP TO THE SHARDS THAT WE WANT TO PROCESS (40 AND ON FOR FULL LOGITS) AND ALSO LIMIT TO A CERTAIN NUMBER OF BATCHES FOR TESTING
-        if shard_idx < 4:  # skip the first 4 shards (0-3) to get to the full logits shards starting at shard 4
-            batch_counter += 1
-            if batch_counter % config.shard_size_batches == 0:
-                shard_idx += 1
-            continue
-        
-        if shard_idx == 4:  # reset batch counter at the start of the first shard we want to process
-            print(f"REACHED SHARD {shard_idx}, BEGINNING DATA COLLECTION....")
+#        if shard_idx < 4:  # skip the first 4 shards (0-3) to get to the full logits shards starting at shard 4
+#            batch_counter += 1
+#            if batch_counter % config.shard_size_batches == 0:
+#                shard_idx += 1
+#            continue
+#        
+#        if shard_idx == 4:  # reset batch counter at the start of the first shard we want to process
+#            print(f"REACHED SHARD {shard_idx}, BEGINNING DATA COLLECTION....")
             
         # =============================================================================================
         
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
         labels = batch["labels"].to(device)
+        
+        print("--> input_ids shape:", input_ids.shape)
+        print("--> attention_mask shape:", attention_mask.shape)
+        print("--> labels shape:", labels.shape)
 
         logits = teacher_forward(teacher, input_ids, attention_mask)
+        
+        print("--> logits shape:", logits.shape)
         
         # *** FULL LOGIT CACHE WOULD BE HERE  ***
         #==============================================================================================
@@ -526,43 +593,56 @@ def cache_split(
                 )
                 
                 # gdrive path
-                gdrive_path = os.path.join(GDRIVE_PATH, f"full_logits_{split_name}_shard{shard_idx:04d}.pt")
-                full_logits_payload = concat_storage(storage["full_logits"])
+#                gdrive_path = os.path.join(GDRIVE_PATH, f"full_logits_{split_name}_shard{shard_idx:04d}.pt")
+                full_logits_payload = storage["full_logits"] #concat_storage(storage["full_logits"])
                 full_logits_payload["meta"] = {
                     "split": split_name,
                     "cache_type": "full_logits",
                     "temperature": config.temperature,
                     "seq_len": config.seq_len,
                 }
-                # SAVE TO DISK FIRST
-                save_payload(shard_path, full_logits_payload)
-                print(f"Writing full_logits shard {shard_idx} to DISK at {shard_path} with {full_logits_payload['input_ids'].shape[0]} samples...")
-                sampling_shard_paths.append(shard_path)
-                time.sleep(3)  # 3 second delay to ensure file is fully written 
+                
+                print("storage keys (excluding meta)...")
+                for key in full_logits_payload.keys():
+                    if key != "meta":
+                        print(f"KEY NAME: {key}")
+                        print(f"num tensors in list: {len(full_logits_payload[key])}")
+                        print(f"tensor shapes: {[tensor.shape for tensor in full_logits_payload[key]]}")
+                        print("-----")
+                
+                
+                print("EARLY STOP!")
+                break
+                
+                # SAVE TO GDRIVE DIRECTLY
+#                save_payload(gdrive_path, full_logits_payload)
+#                print(f"Writing full_logits shard {shard_idx} to GDRIVE at {gdrive_path} with {full_logits_payload['input_ids'].shape[0]} samples...")
+#                sampling_shard_paths.append(gdrive_path)
+#                time.sleep(15)  # 15 second delay to ensure file is fully written 
                 
                 # THEN COPY TO GDRIVE
-                copy_disk_to_drive(shard_path, gdrive_path)
-                print(f"Copying full_logits shard {shard_idx} to Gdrive at {gdrive_path}. Attempting to delete local shard file to free up disk space...")
-                # once the shard is saved to disk and copied to Gdrive, delete from local disk
-                try:
-                    os.remove(shard_path)
-                    print(f"Deleted local shard file: {shard_path}")
-                except Exception as e:
-                    print(f"Error deleting local shard file {shard_path}: {e}. DELETION MAY HAVE TO BE DONE MANUALLY!")
+#                copy_disk_to_drive(shard_path, gdrive_path)
+#                print(f"Copying full_logits shard {shard_idx} to Gdrive at {gdrive_path}. Attempting to delete local shard file to free up disk space...")
+#                # once the shard is saved to disk and copied to Gdrive, delete from local disk
+#                try:
+#                    os.remove(shard_path)
+#                    print(f"Deleted local shard file: {shard_path}")
+#                except Exception as e:
+#                    print(f"Error deleting local shard file {shard_path}: {e}. DELETION MAY HAVE TO BE DONE MANUALLY!")
 #                login(token=hf_api_key, add_to_git_credential=True)
 #                print(f"Uploading {shard_path} to Hugging Face Hub...")
 #                push_to_hf_hub(shard_path)
 #                print(f"Finished uploading {shard_path} to Hugging Face Hub.")
 #                time.sleep(10)  # additional delay after upload to ensure everything is settled before we potentially start the next upload for the next shard
-                print(f"Finished processing shard {shard_idx} for full_logits cache. Attempting to delete storage variable to free up RAM for next shard...")
+#                print(f"Finished processing shard {shard_idx} for full_logits cache. Attempting to delete storage variable to free up RAM for next shard...")
 #                
-                # delete storage variable to free up RAM and re-init empty storage for next shard
-                del storage["full_logits"]
-                # re-initialize empty storage for full_logits to continue accumulating the next shard's worth of data
-                try:
-                    storage["full_logits"] = init_storage("full_logits")["full_logits"]
-                except Exception as e:
-                    print(f"Error initializing empty full_logits storage: {e}")
+#                # delete storage variable to free up RAM and re-init empty storage for next shard
+#                del storage["full_logits"]
+#                # re-initialize empty storage for full_logits to continue accumulating the next shard's worth of data
+#                try:
+#                    storage["full_logits"] = init_storage("full_logits")["full_logits"]
+#                except Exception as e:
+#                    print(f"Error initializing empty full_logits storage: {e}")
             # ==============================================================================================
             
             if not force_shard_sampling:
@@ -595,7 +675,7 @@ def cache_split(
         else:
             save_shard(storage, config, split_name, shard_idx)
             # upload the final full logits shard to HF hub immediately after saving
-            time.sleep(5)  # 5 second delay to ensure file is fully written before upload, since full logits shards can be very large and we want to avoid any risk of trying to upload an incomplete file
+            time.sleep(15)  # 15 second delay to ensure file is fully written before upload, since full logits shards can be very large and we want to avoid any risk of trying to upload an incomplete file
 #            shard_path = os.path.join(
 #                config.cache_dir,
 #                f"full_logits_{split_name}_shard{shard_idx:04d}.pt",
