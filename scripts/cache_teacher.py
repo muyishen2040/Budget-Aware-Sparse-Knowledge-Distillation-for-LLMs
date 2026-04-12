@@ -295,7 +295,7 @@ def write_payload_to_parquet(storage_dict: Dict[str, list], parquet_path: str, m
     
     # (2) now, we can iterate over the index of each key list, extract the relevant tensors, and fill in a pandas df row-by-row
     df_rows = []
-    for idx in range(len_vlist):
+    for idx in tqdm(range(len_vlist), desc=f"processing {mode_key} storage to parquet rows"):
         
         # (a) extract the relevant tensors for this index
         input_id_tensor = storage_dict["input_ids"][idx]
@@ -319,6 +319,7 @@ def write_payload_to_parquet(storage_dict: Dict[str, list], parquet_path: str, m
     # (3) convert the list of rows to a pandas df and then to .parquet
     df = pd.DataFrame(df_rows)
     try:
+        print(f"Attempting to write DataFrame to Parquet at {parquet_path}...")
         df.to_parquet(parquet_path, engine="pyarrow", index=False)
         print(f"Parquet file saved to: {parquet_path}")
     except Exception as e:
