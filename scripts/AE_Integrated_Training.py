@@ -147,7 +147,9 @@ def cache_split(
         if dump_buffer:
             
             print(f"Buffer filled with {buffer_offset} samples. Starting integrated training on this buffer before saving...")
-            dataset = TensorDataset(data_buffer, data_buffer) # AE dataset where the labels are the same as the inputs since it's an autoencoder
+            data_buffer_3d = data_buffer.view(-1, SEQ_LEN, VOCAB_SIZE) # reshape back to [B', T, V] for training where B' = B*len(buffer_list) is the total number of samples in the buffer.
+            
+            dataset = TensorDataset(data_buffer_3d, data_buffer_3d) # AE dataset where the labels are the same as the inputs since it's an autoencoder
             dataloader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True)
                 
             print(f"Starting integrated training on shard {shard_idx} with {data_buffer.shape[0]} samples...")
@@ -174,8 +176,8 @@ def cache_split(
             except Exception as e:
                 print(f"Error allocating new buffer for next shard: {e}. You may need to free up RAM manually before proceeding with the next shard.")
                     
-                print("EARLY EXIT FOR TESTING - REMOVE THIS AFTER INTEGRATING TRAINING CODE")
-                return
+            print("EARLY EXIT FOR TESTING - REMOVE THIS AFTER INTEGRATING TRAINING CODE")
+            return
     
     
     
