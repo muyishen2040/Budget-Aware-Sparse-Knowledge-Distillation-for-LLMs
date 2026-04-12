@@ -115,8 +115,8 @@ def cache_split(
     print(f"Mode: {config.mode}")
 
     # PRE-ALLOCATE THE TRAINING DATA BUFFER
-    buffer_list = [torch.randn(config.batch_size, SEQ_LEN, VOCAB_SIZE, device="cuda") for _ in range(config.shard_size_batches)]
-    final_shape = (len(buffer_list) * buffer_list[0].size(0), buffer_list[0].size(1))
+    buffer_list = [torch.randn(config.batch_size, SEQ_LEN, VOCAB_SIZE, device="cuda") for _ in range(config.shard_size_batches)] #'len'-element list of [B, T, V] tensors
+    final_shape = (len(buffer_list) * buffer_list[0].size(0)* buffer_list[0].size(1), buffer_list[0].size(2)) # [B*T*len, V]
     data_buffer = torch.empty(final_shape, device="cuda")
     shard_idx = 0
     batch_counter = 0
@@ -166,8 +166,8 @@ def cache_split(
             
             print("ATTEMPTING TO ALLOCATE NEW BUFFER FOR NEXT SHARD...")
             try:
-                buffer_list = [torch.randn(config.batch_size, SEQ_LEN, VOCAB_SIZE, device="cuda") for _ in range(config.shard_size_batches)]
-                final_shape = (len(buffer_list) * buffer_list[0].size(0), buffer_list[0].size(1))
+                buffer_list = [torch.randn(config.batch_size, SEQ_LEN, VOCAB_SIZE, device="cuda") for _ in range(config.shard_size_batches)] 
+                final_shape = (len(buffer_list) * buffer_list[0].size(0)* buffer_list[0].size(1), buffer_list[0].size(2)) # [B*T*len, V]
                 data_buffer = torch.empty(final_shape, device="cuda")
                 buffer_offset = 0
                 print("Successfully allocated new buffer for next shard.")
