@@ -5,7 +5,7 @@ from torch.optim import AdamW
 from transformers import get_linear_schedule_with_warmup
 from src.models import load_student
 from src.data import get_cached_dataloaders
-from src.losses import compute_cached_topk_kd_loss
+from src.losses import compute_cached_topk_kd_loss, hybrid_loss
 from src.eval_utils import compute_lm_metrics
 import time
 from tqdm import tqdm
@@ -107,7 +107,10 @@ def main():
             student_outputs = student(input_ids=input_ids, attention_mask=attention_mask)
             student_logits = student_outputs.logits
             
-            loss, ce_loss, kl_loss = compute_cached_topk_kd_loss(compressedk_probs, ae_model, student_logits, topk_probs, topk_ids, labels, temperature=args.temperature, alpha=args.alpha)  
+            # HYBRID LOSS            
+            loss, ce_loss, kl_loss = compute_cached_topk_kd_loss(compressedk_probs, ae_model, student_logits, topk_probs, topk_ids, labels, temperature=args.temperature, alpha=args.alpha)
+            #hybrid_loss
+            #  
             
             optimizer.zero_grad()
             loss.backward()
