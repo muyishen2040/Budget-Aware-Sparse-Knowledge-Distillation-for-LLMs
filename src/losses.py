@@ -1,5 +1,21 @@
 import torch
 import torch.nn.functional as F
+from AutoEncoder.autoencoder import KDAautoEncoder
+
+# LOAD THE AE MODEL (WEIGHTS FROM GDRIVE)
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print("LOADING AE WEIGHTS... (THIS MAY TAKE A MOMENT)")
+ae_weights_dir = '/content/drive/MyDrive/ANLP_Sparse_KD/ae_trained.pth'
+ae_weights = torch.load(ae_weights_dir, map_location=DEVICE)
+ae_model = KDAautoEncoder().to(DEVICE)
+ae_model.load_state_dict(ae_weights)
+ae_model = ae_model.to(torch.float32)  # ensure model is in float32 for consistent behavior during encoding
+for name, param in ae_model.named_parameters():
+    assert param.dtype == torch.float32, f"{name} is not float32"
+ae_model.eval()
+print("AE MODEL...")
+print(ae_model)
+
 
 def compute_full_kd_loss(student_logits, teacher_logits, labels, temperature=1.0, alpha=0.1):
     shift_logits = student_logits[..., :-1, :].contiguous().float()
@@ -91,14 +107,64 @@ def compute_sampling_kd_loss(student_logits, teacher_logits, labels, k=8, temper
     loss = alpha * ce_loss + (1 - alpha) * kl_loss
     return loss, ce_loss, kl_loss
 
-def compute_cached_topk_kd_loss(student_logits, topk_teacher_probs, topk_indices, labels, temperature=1.0, alpha=0.1):
+
+def compute_hybrid_compression_topk(shift_topk_teacher_probs, shift_topk_indices,shift_compressedk_probs):
+    '''
+    Loop through each row of the topk-probs/top-k-indices/compressed-k-probs. For each row, look at the maximum value
+    of top-k-probs in that row. If the max value is below a certain threshold, keep the top-k as is. If the max value is below the threshold,
+    replace the top-k with the compressed-k. If the top-k row is replaced with the corresponding compressed-k row, replace the corresponding
+    top-k index row with a top-k of the compressed-k indices. This way, we can leverage the compressed-k information for rows where the teacher's 
+    probability mass is more diffuse, while still using the original top-k for rows where the teacher is more confident.
+    '''
+    top_k_prob_threshold = 0.8 # if the teacher top-k prob is BELOW this threshold, we use the compressed-k instead of the original top-k
+    for channel_index in range(shift_topk_teacher_probs.size(0)):
+        for timestep_index in range(shift_topk_teacher_probs.size(1)):
+            top_k_prob_row = shift_topk_teacher_probs[channel_index, timestep_index]
+            compressed_k_prob_row = shift_compressedk_probs[channel_index, timestep_index]
+            top_k_prob_max = top_k_prob_row.max()
+            if top_k_prob_max < top_k_prob_threshold:
+                shift_topk_teacher_probs[channel_index, timestep_index] = compressed_k_prob_row
+                # get the top-k indices of the compressed-k row and replace the original top-k indices with those
+                compressed_k_topk_indices = torch.topk(compressed_k_prob_row, k=shift_topk_indices.size(-1), dim=-1).indices
+                shift_topk_indices[channel_index, timestep_index] = compressed_k_topk_indices
+    return shift_topk_teacher_probs, shift_topk_indices
+
+
+
+def compute_cached_topk_kd_loss(student_logits, topk_teacher_probs, compressedk_probs, topk_indices, labels, temperature=1.0, alpha=0.1):
     shift_logits = student_logits[..., :-1, :].contiguous().float()
     shift_labels = labels[..., 1:].contiguous()
     
+    # (1) CE loss on the full vocabulary
     ce_loss = F.cross_entropy(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
     
+    # (2) KL loss between compressed-k teacher probs and student over the full vocab to penalize non-topk mass
+    # (i) compress the student logits to get compressed-k student probs
+    student_full_logprobs = F.log_softmax(student_logits / temperature, dim=-1)
+    _, student_full_logprobs_compressed = ae_model(student_full_logprobs.to(torch.float32))
+    student_compressed_logprobs_shifted = student_full_logprobs_compressed[..., :-1, :].contiguous()
+    
+    # (ii) compute KL(teacher_compressedk || student_compressedk)
+    kl_compressedk = F.kl_div(
+        student_compressed_logprobs_shifted.view(-1, k),
+        compressedk_probs.view(-1, k),
+        reduction='none',
+    ) 
+    k1_compressedk = kl_compressedk.sum(dim=-1).view(*shift_labels.shape)
+    
+    # (3) KL loss with top-k
     shift_topk_teacher_probs = topk_teacher_probs[..., :-1, :].contiguous().float()
     shift_topk_indices = topk_indices[..., :-1, :].contiguous()
+    
+    assert shift_topk_teacher_probs.shape == shift_topk_indices.shape, "Compressed K probs shape must match top-K teacher probs shape"
+    
+    #top_k_probs = shift_topk_teacher_probs 
+    #top_k_idx = shift_topk_indices
+    
+    # Hybrid approach: conditionally replace top-k with compressed-k based on teacher confidence
+    #shift_topk_teacher_probs, shift_topk_indices = compute_hybrid_compression_topk(shift_topk_teacher_probs, shift_topk_indices, shift_compressedk_probs)
+    #assert shift_topk_teacher_probs!= top_k_probs, "Top-k teacher probs should be updated after hybrid compression"
+    #assert shift_topk_indices!= top_k_idx, "Top-k indices should be updated after hybrid compression"
     
     # Compute full log_softmax first to penalize non-topk probability mass
     student_full_log_probs = F.log_softmax(shift_logits / temperature, dim=-1)
@@ -123,7 +189,7 @@ def compute_cached_topk_kd_loss(student_logits, topk_teacher_probs, topk_indices
     else:
         kl_loss = torch.zeros((), device=shift_logits.device, dtype=shift_logits.dtype)
     
-    loss = alpha * ce_loss + (1 - alpha) * kl_loss
+    loss = alpha * ce_loss + (1 - alpha) * kl_loss + (1-alpha)/2 * k1_compressedk.mean()  # weight the compressed-k KL loss as well
     return loss, ce_loss, kl_loss
 
 def compute_cached_sampling_kd_loss(

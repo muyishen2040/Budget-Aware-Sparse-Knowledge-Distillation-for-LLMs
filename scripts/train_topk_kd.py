@@ -58,12 +58,9 @@ def main():
     print(f"Loading cached data from {args.cache_dir}...")
     train_loader, val_loader = get_cached_dataloaders(cache_fmt="topk", cache_dir=args.cache_dir, batch_size=args.batch_size)
     
-    print("len(train_loader):", len(train_loader))
-    print("len(val_loader):", len(val_loader))
     print("EARLY STOP")
-    return
-    
-    
+    return 
+
     optimizer = AdamW(student.parameters(), lr=args.lr)
     
     num_epochs = args.num_epochs
@@ -92,11 +89,12 @@ def main():
             k = args.k
             topk_probs = batch["topk_probs"][..., :k].to(input_device)
             topk_ids = batch["topk_ids"][..., :k].to(input_device)
+            compressedk_probs = batch["compressedk_probs"][..., :k].to(input_device)
             
             student_outputs = student(input_ids=input_ids, attention_mask=attention_mask)
             student_logits = student_outputs.logits
             
-            loss, ce_loss, kl_loss = compute_cached_topk_kd_loss(student_logits, topk_probs, topk_ids, labels, temperature=args.temperature, alpha=args.alpha)
+            loss, ce_loss, kl_loss = compute_cached_topk_kd_loss(student_logits, topk_probs, compressedk_probs, topk_ids, labels, temperature=args.temperature, alpha=args.alpha)
             
             optimizer.zero_grad()
             loss.backward()
