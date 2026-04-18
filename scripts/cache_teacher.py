@@ -93,7 +93,7 @@ def build_topk_softlabels(
     probs = F.softmax(logits / temperature, dim=-1)
     topk_probs, topk_ids = torch.topk(probs, k=k, dim=-1)
 
-    _, compressedk_probs = ae_model(probs)
+    _, compressedk_probs = ae_model(probs.to(dtype=probs_dtype))
     
     return {
         "topk_ids": topk_ids.cpu(),
