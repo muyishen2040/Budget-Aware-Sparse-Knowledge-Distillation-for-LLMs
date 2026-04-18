@@ -3,18 +3,18 @@ import torch.nn.functional as F
 from AutoEncoder.autoencoder import KDAautoEncoder
 
 # LOAD THE AE MODEL (WEIGHTS FROM GDRIVE)
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print("LOADING AE WEIGHTS... (THIS MAY TAKE A MOMENT)")
-ae_weights_dir = '/content/drive/MyDrive/ANLP_Sparse_KD/ae_trained.pth'
-ae_weights = torch.load(ae_weights_dir, map_location=DEVICE)
-ae_model = KDAautoEncoder().to(DEVICE)
-ae_model.load_state_dict(ae_weights)
-ae_model = ae_model.to(torch.float32)  # ensure model is in float32 for consistent behavior during encoding
-for name, param in ae_model.named_parameters():
-    assert param.dtype == torch.float32, f"{name} is not float32"
-ae_model.eval()
-print("AE MODEL...")
-print(ae_model)
+def load_AE():
+    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("LOADING AE WEIGHTS... (THIS MAY TAKE A MOMENT)")
+    ae_weights_dir = '/content/drive/MyDrive/ANLP_Sparse_KD/ae_trained.pth'
+    ae_weights = torch.load(ae_weights_dir, map_location=DEVICE)
+    ae_model = KDAautoEncoder().to(DEVICE)
+    ae_model.load_state_dict(ae_weights)
+    ae_model = ae_model.to(torch.float32)  # ensure model is in float32 for consistent behavior during encoding
+    for name, param in ae_model.named_parameters():
+        assert param.dtype == torch.float32, f"{name} is not float32"
+    ae_model.eval()
+    return ae_model
 
 def compute_full_kd_loss(student_logits, teacher_logits, labels, temperature=1.0, alpha=0.1):
     shift_logits = student_logits[..., :-1, :].contiguous().float()
@@ -141,6 +141,9 @@ def compute_cached_topk_kd_loss(student_logits, topk_teacher_probs, topk_indices
     loss = alpha * ce_loss + (1 - alpha) * kl_loss
     
     # ADD A LOSS TERM USING THE AE-COMPRESSED PROBS
+    autoencoder = load_AE()
+    print("AE MODEL...")
+    print(autoencoder)
     
     return loss, ce_loss, kl_loss
 
