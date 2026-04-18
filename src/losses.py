@@ -171,10 +171,10 @@ def compute_cached_topk_kd_loss(compressedk_probs, AE_model, student_logits, top
     compressed_teacher_probs = compressedk_probs # [B, T, K] here, K matches the AE latent dim
     # (2) shift compressed teacher probs to align with student logits
     shift_compressed_teacher_probs = compressed_teacher_probs[..., :-1, :].contiguous().float() # [B, T-1, K]
-    # (3) convert the student logits to log probs over the full vocab. Here, we want the student logits to be of shape [B, T, V] (not shifted yet)
-    student_log_probs = F.log_softmax(student_logits / temperature, dim=-1) # [B, T, V]
-    # (4) compress the student log probs from [B, T, V] to [B, T, K] using the AE encoder. 
-    _, compressed_student_probs = AE_model(student_log_probs.to(dtype=torch.float32)) # [B, T, V] -> [B, T, K]
+    # (3) convert the student logits to probs over the full vocab. Here, we want the student logits to be of shape [B, T, V] (not shifted yet)
+    student_probs = F.softmax(student_logits / temperature, dim=-1) # [B, T, V]
+    # (4) compress the student probs from [B, T, V] to [B, T, K] using the AE encoder. 
+    _, compressed_student_probs = AE_model(student_probs.to(dtype=torch.float32)) # [B, T, V] -> [B, T, K]
     # (5) shift the compressed student probs to align with the teacher
     shift_compressed_student_probs = compressed_student_probs[..., :-1, :].contiguous().float() # [B, T-1, K]
     shift_compressed_student_logprobs = torch.log(shift_compressed_student_probs + 1e-9) # add small value for numerical stability
