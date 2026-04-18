@@ -136,7 +136,7 @@ def compute_cached_topk_kd_loss(compressedk_probs, AE_model, student_logits, top
     # (3) convert the student logits to log probs over the full vocab. Here, we want the student logits to be of shape [B, T, V] (not shifted yet)
     student_log_probs = F.log_softmax(student_logits / temperature, dim=-1) # [B, T, V]
     # (4) compress the student log probs from [B, T, V] to [B, T, K] using the AE encoder. 
-    _, compressed_student_probs = AE_model(student_log_probs) # [B, T, V] -> [B, T, K]
+    _, compressed_student_probs = AE_model(student_log_probs.to(dtype=torch.float32)) # [B, T, V] -> [B, T, K]
     # (5) shift the compressed student probs to align with the teacher
     shift_compressed_student_probs = compressed_student_probs[..., :-1, :].contiguous().float() # [B, T-1, K]
     shift_compressed_student_logprobs = torch.log(shift_compressed_student_probs + 1e-9) # add small value for numerical stability
