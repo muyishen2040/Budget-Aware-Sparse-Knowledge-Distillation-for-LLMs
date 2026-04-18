@@ -58,9 +58,6 @@ def main():
     print(f"Loading cached data from {args.cache_dir}...")
     train_loader, val_loader = get_cached_dataloaders(cache_fmt="topk", cache_dir=args.cache_dir, batch_size=args.batch_size)
     
-    print("EARLY STOP")
-    return 
-
     optimizer = AdamW(student.parameters(), lr=args.lr)
     
     num_epochs = args.num_epochs
