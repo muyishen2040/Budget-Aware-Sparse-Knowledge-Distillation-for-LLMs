@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 from AutoEncoder.autoencoder import KDAautoEncoder
+import os 
 
 
 def compute_full_kd_loss(student_logits, teacher_logits, labels, temperature=1.0, alpha=0.1):
@@ -105,10 +106,10 @@ def hybrid_loss(compressedk_probs, AE_model, student_logits, topk_teacher_probs,
     '''
     
     # (1) - (6)
-    confidence_threshold = 0.8
+    confidence_threshold = float(os.environ.get("CONFIDENCE_THRESHOLD", 0.5))
     max_probs_tensor = topk_teacher_probs.max(dim=-1).values     #[B,T,K] --> [B,T]
     confidence_mask = max_probs_tensor > confidence_threshold    #[B,T] boolean mask where True if max prob > threshold
-    updated_teacher_probs = torch.where(confidence_mask.unsqueeze(-1), topk_teacher_probs, compressedk_probs+topk_teacher_probs)  #[B,T,K]
+    updated_teacher_probs = torch.where(confidence_mask.unsqueeze(-1), topk_teacher_probs, compressedk_probs)  #[B,T,K]
     updated_teacher_probs = updated_teacher_probs / updated_teacher_probs.sum(dim=-1, keepdim=True)  # renormalize each row to sum to 1
     new_topk_indices = torch.topk(updated_teacher_probs, k=topk_teacher_probs.size(-1), dim=-1).indices  #[B,T,K]
     

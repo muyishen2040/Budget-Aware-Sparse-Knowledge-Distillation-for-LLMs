@@ -1,4 +1,5 @@
 import argparse
+import os 
 import torch
 import torch.nn.functional as F
 from torch.optim import AdamW
@@ -88,7 +89,10 @@ def main():
     
     start_time = time.time()
     step = 0
-    final_loss = 0.0
+    final_loss = 0.
+    
+    confidence_threshold = float(os.environ.get("CONFIDENCE_THRESHOLD", 0.5))
+    print(f"*** Using confidence threshold: {confidence_threshold}")
     
     for epoch in range(num_epochs):
         for batch in tqdm(train_loader):
