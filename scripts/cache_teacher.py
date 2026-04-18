@@ -13,7 +13,7 @@ from src.data import get_dataloaders
 # LOAD THE AE MODEL (WEIGHTS FROM GDRIVE)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("LOADING AE WEIGHTS...")
-ae_weights_dir = "drive/MyDrive/ANLP_Sparse_KD/ae_trained.pth"
+ae_weights_dir = '/content/drive/MyDrive/ANLP_Sparse_KD/ae_trained.pth'
 ae_weights = torch.load(ae_weights_dir, map_location=DEVICE)
 ae_model = KDAautoEncoder().to(DEVICE)
 ae_model.load_state_dict(ae_weights)
