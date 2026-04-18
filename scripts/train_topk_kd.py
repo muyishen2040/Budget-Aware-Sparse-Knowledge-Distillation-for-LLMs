@@ -9,6 +9,22 @@ from src.losses import compute_cached_topk_kd_loss
 from src.eval_utils import compute_lm_metrics
 import time
 from tqdm import tqdm
+from AutoEncoder.autoencoder import KDAautoEncoder
+
+
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print("LOADING AE WEIGHTS... (THIS MAY TAKE A MOMENT)")
+ae_weights_dir = '/content/drive/MyDrive/ANLP_Sparse_KD/ae_trained.pth'
+ae_weights = torch.load(ae_weights_dir, map_location=DEVICE)
+ae_model = KDAautoEncoder().to(DEVICE)
+ae_model.load_state_dict(ae_weights)
+ae_model = ae_model.to(torch.float32)  # ensure model is in float32 for consistent behavior during encoding
+for name, param in ae_model.named_parameters():
+    assert param.dtype == torch.float32, f"{name} is not float32"
+ae_model.eval()
+print("AE MODEL LOADED AND READY.")
+print(ae_model)
+
 
 def evaluate(student, val_loader, device):
     student.eval()
@@ -91,7 +107,7 @@ def main():
             student_outputs = student(input_ids=input_ids, attention_mask=attention_mask)
             student_logits = student_outputs.logits
             
-            loss, ce_loss, kl_loss = compute_cached_topk_kd_loss(student_logits, topk_probs, topk_ids, labels, temperature=args.temperature, alpha=args.alpha) #compressedk_probs, 
+            loss, ce_loss, kl_loss = compute_cached_topk_kd_loss(ae_model, student_logits, topk_probs, topk_ids, labels, temperature=args.temperature, alpha=args.alpha) #compressedk_probs, 
             
             optimizer.zero_grad()
             loss.backward()
