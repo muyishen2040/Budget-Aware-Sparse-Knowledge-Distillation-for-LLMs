@@ -146,7 +146,7 @@ def compute_cached_topk_kd_loss(student_logits, topk_teacher_probs, compressedk_
     
     compressedk_probs_shifted = compressedk_probs[..., :-1, :].contiguous().float()  # [B, T-1, C]
     compressedk_probs_renorm = compressedk_probs_shifted / compressedk_probs_shifted.sum(dim=-1, keepdim=True)  # renormalize to sum to 1
-    # (ii) compute KL(teacher_compressedk || student_compressedk)
+    # (ii) compute KL
     k = topk_indices[..., :-1, :].contiguous().size(-1)
     kl_compressedk = F.kl_div(
         student_compressed_logprobs_shifted.view(-1, k),
