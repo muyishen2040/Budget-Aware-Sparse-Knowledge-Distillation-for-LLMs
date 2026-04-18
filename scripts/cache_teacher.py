@@ -12,7 +12,7 @@ from src.data import get_dataloaders
 
 # LOAD THE AE MODEL (WEIGHTS FROM GDRIVE)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print("LOADING AE WEIGHTS...")
+print("LOADING AE WEIGHTS... (THIS MAY TAKE A MOMENT)")
 ae_weights_dir = '/content/drive/MyDrive/ANLP_Sparse_KD/ae_trained.pth'
 ae_weights = torch.load(ae_weights_dir, map_location=DEVICE)
 ae_model = KDAautoEncoder().to(DEVICE)
@@ -89,9 +89,12 @@ def build_topk_softlabels(
     probs = F.softmax(logits / temperature, dim=-1)
     topk_probs, topk_ids = torch.topk(probs, k=k, dim=-1)
 
+    compressedk_probs = ae_model.encoder(probs)
+    
     return {
         "topk_ids": topk_ids.cpu(),
         "topk_probs": topk_probs.to(dtype=probs_dtype).cpu(),
+        "compressedk_probs": compressedk_probs.to(dtype=probs_dtype).cpu(),
     }
 
 
@@ -185,6 +188,7 @@ def init_storage(mode: str) -> Dict[str, Dict[str, list]]:
             "labels": [],
             "topk_ids": [],
             "topk_probs": [],
+            "compressedk_probs": [],
         }
 
     if mode in ("sampling", "both"):
@@ -301,6 +305,7 @@ def cache_split(
     )
 
     storage = init_storage(config.mode)
+    assert "compressedk_probs" in storage["topk"].keys()  # sanity check that AE output is included in storage when topk is enabled
     shard_idx = 0
     batch_counter = 0
     sampling_shard_paths: list = []  # track shard paths for later merge
@@ -319,9 +324,12 @@ def cache_split(
                 temperature=config.temperature,
                 probs_dtype=config.probs_dtype,
             )
+            
+            assert "compressedk_probs" in topk_out.keys()  # sanity check that AE output is included in topk_out when building top-k soft labels
             append_common_tensors(storage["topk"], input_ids, attention_mask, labels)
             storage["topk"]["topk_ids"].append(topk_out["topk_ids"])
             storage["topk"]["topk_probs"].append(topk_out["topk_probs"])
+            storage["topk"]["compressedk_probs"].append(topk_out["compressedk_probs"])
 
         if config.mode in ("sampling", "both"):
             sampling_out = build_sampling_softlabels(
@@ -478,7 +486,7 @@ Dataset keys (for --dataset):
         val_dataset_name=args.dataset,
     )
 
-#    cache_split(teacher, train_loader, "train", config)
+    cache_split(teacher, train_loader, "train", config)
 #    cache_split(teacher, val_loader, "val", config)
 
 
