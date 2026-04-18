@@ -93,7 +93,7 @@ def compute_sampling_kd_loss(student_logits, teacher_logits, labels, k=8, temper
     loss = alpha * ce_loss + (1 - alpha) * kl_loss
     return loss, ce_loss, kl_loss
 
-def compute_cached_topk_kd_loss(AE, student_logits, topk_teacher_probs, topk_indices, labels, temperature=1.0, alpha=0.1):
+def compute_cached_topk_kd_loss(AE_model, student_logits, topk_teacher_probs, topk_indices, labels, temperature=1.0, alpha=0.1):
     shift_logits = student_logits[..., :-1, :].contiguous().float()
     shift_labels = labels[..., 1:].contiguous()
     
@@ -131,7 +131,7 @@ def compute_cached_topk_kd_loss(AE, student_logits, topk_teacher_probs, topk_ind
     # ADD A LOSS TERM USING THE AE-COMPRESSED PROBS
 
     print("AE MODEL...")
-    print(AE)
+    print(AE_model)
     
     return loss, ce_loss, kl_loss
 
