@@ -102,8 +102,7 @@ def main():
             k = args.k
             topk_probs = batch["topk_probs"][..., :k].to(input_device)
             topk_ids = batch["topk_ids"][..., :k].to(input_device)
-            compressedk_probs = batch["compressedk_probs"][..., :k].to(input_device)
-            
+            compressedk_probs = batch["compressedk_probs"].to(input_device)            
             student_outputs = student(input_ids=input_ids, attention_mask=attention_mask)
             student_logits = student_outputs.logits
             
