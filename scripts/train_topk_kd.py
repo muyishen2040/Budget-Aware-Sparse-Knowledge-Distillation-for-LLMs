@@ -93,6 +93,8 @@ def main():
     
     confidence_threshold = float(os.environ.get("CONFIDENCE_THRESHOLD", 0.5))
     print(f"*** Using confidence threshold: {confidence_threshold}")
+    USE_HYBRID_LOSS = os.environ.get("USE_HYBRID_LOSS", "False")
+    print(f"*** Using hybrid loss: {USE_HYBRID_LOSS}")
     
     for epoch in range(num_epochs):
         for batch in tqdm(train_loader):
@@ -110,9 +112,11 @@ def main():
             student_outputs = student(input_ids=input_ids, attention_mask=attention_mask)
             student_logits = student_outputs.logits
             
-                    
-            loss, ce_loss, kl_loss = hybrid_loss(compressedk_probs, ae_model, student_logits, topk_probs, topk_ids, labels, temperature=args.temperature, alpha=args.alpha)
-            #  compute_cached_topk_kd_loss
+            
+            if USE_HYBRID_LOSS.lower() == "true":
+                loss, ce_loss, kl_loss = hybrid_loss(compressedk_probs, ae_model, student_logits, topk_probs, topk_ids, labels, temperature=args.temperature, alpha=args.alpha)
+            else:
+                loss, ce_loss, kl_loss = compute_cached_topk_kd_loss(compressedk_probs, ae_model, student_logits, topk_probs, topk_ids, labels, temperature=args.temperature, alpha=args.alpha)
             
             optimizer.zero_grad()
             loss.backward()
