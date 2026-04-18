@@ -490,7 +490,7 @@ Dataset keys (for --dataset):
         val_dataset_name=args.dataset,
     )
 
-#    cache_split(teacher, train_loader, "train", config)
+    cache_split(teacher, train_loader, "train", config)
     cache_split(teacher, val_loader, "val", config)
 
 
