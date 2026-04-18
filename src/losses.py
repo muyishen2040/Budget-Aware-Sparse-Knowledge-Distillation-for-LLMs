@@ -147,6 +147,7 @@ def compute_cached_topk_kd_loss(compressedk_probs, AE_model, student_logits, top
         reduction='batchmean'
     ) * (temperature ** 2)
     
+    print("compression KL loss:", kl_compressed.item())
     loss = alpha * ce_loss + (1 - alpha) * kl_loss + (1 - alpha)/2 * kl_compressed  # weight the compressed KL loss as well
     return loss, ce_loss, kl_loss
 
