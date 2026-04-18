@@ -104,23 +104,12 @@ def hybrid_loss(compressedk_probs, AE_model, student_logits, topk_teacher_probs,
     (7) compute the KD loss using the new top_k_teacher_probs and top_k_indices
     '''
     
-    # (1) initialize an empty tensor of the same shape as top_k_teacher_probs
-    updated_teacher_probs = torch.zeros_like(topk_teacher_probs)
-    
-    # (2) loops through each row of top_k_teacher_probs and finds the max prob in that row
-    for i in range(topk_teacher_probs.size(0)):
-        for j in range(topk_teacher_probs.size(1)):
-            max_prob = topk_teacher_probs[i, j].max()
-            
-            # (3) if the max prob is above a certain threshold, copy the top_k_teacher_probs row to the corresponding row in the empty tensor
-            if max_prob > 0.8:  # example threshold
-                updated_teacher_probs[i, j] = topk_teacher_probs[i, j]
-            # (4) if the max prob is below the threshold, copy the compressedk_probs row to the corresponding row in the empty tensor
-            else:
-                updated_teacher_probs[i, j] = compressedk_probs[i, j]
-                
-    # (6) the top_k_indices will be updated use torch.topk on the new tensor
-    _, new_topk_indices = torch.topk(updated_teacher_probs, k=topk_teacher_probs.size(-1), dim=-1)
+    # (1) - (6)
+    confidence_threshold = 0.8
+    max_probs_tensor = topk_teacher_probs.max(dim=-1).values     #[B,T,K] --> [B,T]
+    confidence_mask = max_probs_tensor > confidence_threshold    #[B,T] boolean mask where True if max prob > threshold
+    updated_teacher_probs = torch.where(confidence_mask.unsqueeze(-1), topk_teacher_probs, compressedk_probs)  #[B,T,K]
+    new_topk_indices = torch.topk(updated_teacher_probs, k=topk_teacher_probs.size(-1), dim=-1).indices  #[B,T,K]
     
     # (7) compute the KD loss using the new top_k_teacher_probs and top_k_indices
     assert updated_teacher_probs.shape == topk_teacher_probs.shape, f"Updated teacher probs shape {updated_teacher_probs.shape} does not match original {topk_teacher_probs.shape}"
@@ -164,29 +153,6 @@ def compute_cached_topk_kd_loss(compressedk_probs, AE_model, student_logits, top
         kl_loss = torch.zeros((), device=shift_logits.device, dtype=shift_logits.dtype)
     
     loss = alpha * ce_loss + (1 - alpha) * kl_loss
-    
-    # COMPRESSION LOSS
-    # Given: compressedk_probs from the AE of shape [B, T, K] and student_logits of shape [B, T, V]
-    # (1) Get compressed teacher probs
-    compressed_teacher_probs = compressedk_probs # [B, T, K] here, K matches the AE latent dim
-    # (2) shift compressed teacher probs to align with student logits
-    shift_compressed_teacher_probs = compressed_teacher_probs[..., :-1, :].contiguous().float() # [B, T-1, K]
-    # (3) convert the student logits to probs over the full vocab. Here, we want the student logits to be of shape [B, T, V] (not shifted yet)
-    student_probs = F.softmax(student_logits / temperature, dim=-1) # [B, T, V]
-    # (4) compress the student probs from [B, T, V] to [B, T, K] using the AE encoder. 
-    _, compressed_student_probs = AE_model(student_probs.to(dtype=torch.float32)) # [B, T, V] -> [B, T, K]
-    # (5) shift the compressed student probs to align with the teacher
-    shift_compressed_student_probs = compressed_student_probs[..., :-1, :].contiguous().float() # [B, T-1, K]
-    shift_compressed_student_logprobs = torch.log(shift_compressed_student_probs + 1e-9) # add small value for numerical stability
-    # (6) compute KL divergence between compressed student and compressed teacher distributions
-    kl_compressed = F.kl_div(
-        shift_compressed_student_logprobs.view(-1, shift_compressed_student_logprobs.size(-1)),
-        shift_compressed_teacher_probs.view(-1, shift_compressed_teacher_probs.size(-1)),
-        reduction='batchmean'
-    ) * (temperature ** 2)
-    
-    print("compression KL loss:", kl_compressed.item())
-    loss = alpha * ce_loss + (2/3) * (1 - alpha) * kl_loss + (1/3) * (1 - alpha) * kl_compressed  # weight the compressed KL loss as well
     
     return loss, ce_loss, kl_loss
 
