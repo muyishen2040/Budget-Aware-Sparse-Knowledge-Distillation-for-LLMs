@@ -91,7 +91,7 @@ def main():
             student_outputs = student(input_ids=input_ids, attention_mask=attention_mask)
             student_logits = student_outputs.logits
             
-            loss, ce_loss, kl_loss = compute_cached_topk_kd_loss(student_logits, topk_probs, compressedk_probs, topk_ids, labels, temperature=args.temperature, alpha=args.alpha)
+            loss, ce_loss, kl_loss = compute_cached_topk_kd_loss(student_logits, topk_probs, topk_ids, labels, temperature=args.temperature, alpha=args.alpha) #compressedk_probs, 
             
             optimizer.zero_grad()
             loss.backward()
