@@ -114,6 +114,13 @@ def hybrid_loss(compressedk_probs, AE_model, student_logits, topk_teacher_probs,
     new_topk_indices = torch.topk(updated_teacher_probs, k=topk_teacher_probs.size(-1), dim=-1).indices  #[B,T,K]
     
     # (7) compute the KD loss using the new top_k_teacher_probs and top_k_indices
+    if confidence_threshold == 0.0:
+        # confidence mask should be all true
+        assert confidence_mask.all(), "Confidence mask should be all true when threshold is 0.0"
+        assert (updated_teacher_probs == topk_teacher_probs).all(), "Updated teacher probs should match original when threshold is 0.0"
+        assert (new_topk_indices == topk_indices).all(), "New top-k indices should match original when threshold is 0.0"
+        
+        
     assert updated_teacher_probs.shape == topk_teacher_probs.shape, f"Updated teacher probs shape {updated_teacher_probs.shape} does not match original {topk_teacher_probs.shape}"
     assert new_topk_indices.shape == topk_indices.shape, f"New top-k indices shape {new_topk_indices.shape} does not match original {topk_indices.shape}"
     
