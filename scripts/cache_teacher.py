@@ -38,7 +38,7 @@ class CacheConfig:
 
     # output
     cache_dir: str = "teacher_cache"
-    save_per_split_single_file: bool = True   # if False, save shards instead
+    save_per_split_single_file: bool = False   # if False, save shards instead
     shard_size_batches: int = 100             # used only when save_per_split_single_file=False
 
     # top-k settings
@@ -470,8 +470,8 @@ Dataset keys (for --dataset):
         batch_size=args.batch_size,
         num_train_samples=args.num_train_samples if args.num_train_samples > 0 else None,
         cache_dir=args.cache_dir,
-        save_per_split_single_file=True,
-        shard_size_batches=100,
+        save_per_split_single_file=False, #True
+        shard_size_batches=10, #100
         topk_k=args.topk_k,
         sampling_num_draws=args.sampling_num_draws,
         temperature=args.temperature,
