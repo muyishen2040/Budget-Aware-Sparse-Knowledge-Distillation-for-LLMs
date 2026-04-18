@@ -259,7 +259,7 @@ def get_cached_dataloaders(cache_fmt="topk", cache_dir="teacher_cache", batch_si
     train_dataset = _make_dataset("train")
     val_dataset   = _make_dataset("val")
 
-    # NOTE: shuffle=False for ShardedCachedDataset — shuffling across shards
+    # shuffle=False for ShardedCachedDataset — shuffling across shards
     # causes thrashing (each random access potentially loads a different shard).
     # For training, consider setting shuffle=False and shuffling at the shard level
     # during caching, or accept the sequential order.
