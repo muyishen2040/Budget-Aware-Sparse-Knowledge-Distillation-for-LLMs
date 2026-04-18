@@ -471,7 +471,7 @@ Dataset keys (for --dataset):
         num_train_samples=args.num_train_samples if args.num_train_samples > 0 else None,
         cache_dir=args.cache_dir,
         save_per_split_single_file=False, #True
-        shard_size_batches=10, #100
+        shard_size_batches=30, # 10    100
         topk_k=args.topk_k,
         sampling_num_draws=args.sampling_num_draws,
         temperature=args.temperature,
