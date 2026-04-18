@@ -93,11 +93,10 @@ def compute_sampling_kd_loss(student_logits, teacher_logits, labels, k=8, temper
     loss = alpha * ce_loss + (1 - alpha) * kl_loss
     return loss, ce_loss, kl_loss
 
-def compute_cached_topk_kd_loss(AE_model, student_logits, topk_teacher_probs, topk_indices, labels, temperature=1.0, alpha=0.1):
+def compute_cached_topk_kd_loss(compressedk_probs, AE_model, student_logits, topk_teacher_probs, topk_indices, labels, temperature=1.0, alpha=0.1):
     shift_logits = student_logits[..., :-1, :].contiguous().float()
     shift_labels = labels[..., 1:].contiguous()
     
-    print("!!!!!!!!!!!!!!!!11CE LOSS!!!!!!!!!!!!!!!!!!!!!!!!!")
     ce_loss = F.cross_entropy(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
     
     shift_topk_teacher_probs = topk_teacher_probs[..., :-1, :].contiguous().float()
@@ -129,10 +128,26 @@ def compute_cached_topk_kd_loss(AE_model, student_logits, topk_teacher_probs, to
     loss = alpha * ce_loss + (1 - alpha) * kl_loss
     
     # ADD A LOSS TERM USING THE AE-COMPRESSED PROBS
-
-    print("AE MODEL...")
-    print(AE_model)
+    # Given: compressedk_probs from the AE of shape [B, T, K] and student_logits of shape [B, T, V]
+    # (1) Get compressed teacher probs
+    compressed_teacher_probs = compressedk_probs # [B, T, K] here, K matches the AE latent dim
+    # (2) shift compressed teacher probs to align with student logits
+    shift_compressed_teacher_probs = compressed_teacher_probs[..., :-1, :].contiguous().float() # [B, T-1, K]
+    # (3) convert the student logits to log probs over the full vocab. Here, we want the student logits to be of shape [B, T, V] (not shifted yet)
+    student_log_probs = F.log_softmax(student_logits / temperature, dim=-1) # [B, T, V]
+    # (4) compress the student log probs from [B, T, V] to [B, T, K] using the AE encoder. 
+    _, compressed_student_probs = AE_model(student_log_probs) # [B, T, V] -> [B, T, K]
+    # (5) shift the compressed student probs to align with the teacher
+    shift_compressed_student_probs = compressed_student_probs[..., :-1, :].contiguous().float() # [B, T-1, K]
+    shift_compressed_student_logprobs = torch.log(shift_compressed_student_probs + 1e-9) # add small value for numerical stability
+    # (6) compute KL divergence between compressed student and compressed teacher distributions
+    kl_compressed = F.kl_div(
+        shift_compressed_student_logprobs.view(-1, shift_compressed_student_logprobs.size(-1)),
+        shift_compressed_teacher_probs.view(-1, shift_compressed_teacher_probs.size(-1)),
+        reduction='batchmean'
+    ) * (temperature ** 2)
     
+    loss = alpha * ce_loss + (1 - alpha) * kl_loss + (1 - alpha)/2 * kl_compressed  # weight the compressed KL loss as well
     return loss, ce_loss, kl_loss
 
 def compute_cached_sampling_kd_loss(
