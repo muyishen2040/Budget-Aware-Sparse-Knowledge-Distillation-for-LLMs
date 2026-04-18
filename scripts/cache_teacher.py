@@ -5,10 +5,21 @@ from typing import Literal, Optional, Dict, Any
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
-
+from AutoEncoder.autoencoder import KDAautoEncoder
 import argparse
 from src.models import load_teacher
 from src.data import get_dataloaders
+
+# LOAD THE AE MODEL (WEIGHTS FROM GDRIVE)
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print("LOADING AE WEIGHTS...")
+ae_weights_dir = "drive/MyDrive/ANLP_Sparse_KD/ae_trained.pth"
+ae_weights = torch.load(ae_weights_dir, map_location=DEVICE)
+ae_model = KDAautoEncoder().to(DEVICE)
+ae_model.load_state_dict(ae_weights)
+ae_model.eval()
+print("AE MODEL...")
+print(ae_model)
 
 
 @dataclass
@@ -467,8 +478,8 @@ Dataset keys (for --dataset):
         val_dataset_name=args.dataset,
     )
 
-    cache_split(teacher, train_loader, "train", config)
-    cache_split(teacher, val_loader, "val", config)
+#    cache_split(teacher, train_loader, "train", config)
+#    cache_split(teacher, val_loader, "val", config)
 
 
 if __name__ == "__main__":
