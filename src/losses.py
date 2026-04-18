@@ -177,10 +177,10 @@ def compute_cached_topk_kd_loss(student_logits, topk_teacher_probs, compressedk_
     # Renormalize teacher probabilities over the top-k support
     teacher_probs = shift_topk_teacher_probs / shift_topk_teacher_probs.sum(dim=-1, keepdim=True)
     
-    k = shift_topk_indices.size(-1)
+    #k = shift_topk_indices.size(-1)
     kl = F.kl_div(
-        student_log_probs.view(-1, k),
-        teacher_probs.view(-1, k),
+        student_log_probs.view(-1, shift_topk_indices.size(-1)),
+        teacher_probs.view(-1, shift_topk_indices.size(-1)),
         reduction='none'
     )
     kl = kl.sum(dim=-1).view(*shift_labels.shape)
