@@ -1,6 +1,7 @@
 import os
 from dataclasses import dataclass
 from typing import Literal, Optional, Dict, Any
+from xml.parsers.expat import model
 
 import torch
 import torch.nn.functional as F
@@ -14,10 +15,12 @@ from src.data import get_dataloaders
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("LOADING AE WEIGHTS... (THIS MAY TAKE A MOMENT)")
 ae_weights_dir = '/content/drive/MyDrive/ANLP_Sparse_KD/ae_trained.pth'
-ae_weights = torch.load(ae_weights_dir, map_location=DEVICE, strict=False)
+ae_weights = torch.load(ae_weights_dir, map_location=DEVICE)
 ae_model = KDAautoEncoder().to(DEVICE)
 ae_model.load_state_dict(ae_weights)
 ae_model = ae_model.to(torch.float32)  # ensure model is in float32 for consistent behavior during encoding
+for name, param in ae_model.named_parameters():
+    assert param.dtype == torch.float32, f"{name} is not float32"
 ae_model.eval()
 print("AE MODEL...")
 print(ae_model)
