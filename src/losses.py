@@ -140,14 +140,16 @@ def compute_cached_topk_kd_loss(student_logits, topk_teacher_probs, compressedk_
     
     # (2) KL loss between compressed-k teacher probs and student over the full vocab to penalize non-topk mass
     # (i) compress the student logits to get compressed-k student probs
-    student_full_logprobs = F.log_softmax(student_logits / temperature, dim=-1)
-    _, student_full_logprobs_compressed = ae_model(student_full_logprobs.to(torch.float32))
+    student_logprobs = F.log_softmax(student_logits / temperature, dim=-1)
+    _, student_full_logprobs_compressed = ae_model(student_logprobs.to(torch.float32))
     student_compressed_logprobs_shifted = student_full_logprobs_compressed[..., :-1, :].contiguous()
     
+    compressedk_probs_shifted = compressedk_probs[..., :-1, :].contiguous().float()  # [B, T-1, C]
+    compressedk_probs_renorm = compressedk_probs_shifted / compressedk_probs_shifted.sum(dim=-1, keepdim=True)  # renormalize to sum to 1
     # (ii) compute KL(teacher_compressedk || student_compressedk)
     kl_compressedk = F.kl_div(
         student_compressed_logprobs_shifted.view(-1, k),
-        compressedk_probs.view(-1, k),
+        compressedk_probs_renorm.view(-1, k),
         reduction='none',
     ) 
     k1_compressedk = kl_compressedk.sum(dim=-1).view(*shift_labels.shape)
