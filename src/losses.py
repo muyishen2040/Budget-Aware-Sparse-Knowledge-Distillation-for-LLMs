@@ -111,7 +111,7 @@ def hybrid_loss(compressedk_probs, AE_model, student_logits, topk_teacher_probs,
     confidence_mask = max_probs_tensor > confidence_threshold    #[B,T] boolean mask where True if max prob > threshold
     updated_teacher_probs = torch.where(confidence_mask.unsqueeze(-1), topk_teacher_probs, compressedk_probs)  #[B,T,K]
 #    updated_teacher_probs = updated_teacher_probs / updated_teacher_probs.sum(dim=-1, keepdim=True)  # renormalize each row to sum to 1
-    new_topk_indices = torch.topk(updated_teacher_probs, k=topk_teacher_probs.size(-1), dim=-1).indices  #[B,T,K]
+    new_topk_indices = topk_indices #torch.topk(updated_teacher_probs, k=topk_teacher_probs.size(-1), dim=-1).indices  #[B,T,K]
     
     # (7) compute the KD loss using the new top_k_teacher_probs and top_k_indices
     if confidence_threshold == 0.0:
