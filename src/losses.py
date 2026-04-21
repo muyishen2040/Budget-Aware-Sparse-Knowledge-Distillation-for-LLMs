@@ -126,7 +126,7 @@ def compression_loss(compressedk_probs, ae_model, student_logits, topk_probs, to
     #==========================================================
     compressedk_probs = compressedk_probs.clamp(min=eps) #[B, T, K] compressed teacher distribution in AE latent space, already softmaxed by AE
     student_probs = F.softmax(student_logits / temperature, dim=-1) # the student logits must be softmaxed prior to AE compression, since the AE was trained on probs. 
-    _, student_probs = ae_model(student_probs)  # [B, T, V] -> [B, T, K=8] get student distribution in AE latent space. The AE latent space has a softmax in it.
+    _, student_probs = ae_model(student_probs.to(dtype=torch.float32))  # [B, T, V] -> [B, T, K=8] get student distribution in AE latent space. The AE latent space has a softmax in it.
     student_probs = student_probs.clamp(min=eps)
     # Row-wise KL divergence: KL(x || x_hat)
     kl_recon = (compressedk_probs * (compressedk_probs.log() - student_probs.log())).sum(dim=-1).mean()
