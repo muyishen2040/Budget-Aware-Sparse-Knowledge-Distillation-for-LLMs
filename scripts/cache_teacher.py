@@ -14,7 +14,7 @@ from src.data import get_dataloaders
 # LOAD THE AE MODEL (WEIGHTS FROM GDRIVE)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("LOADING AE WEIGHTS... (THIS MAY TAKE A MOMENT)")
-ae_weights_dir = '/content/drive/MyDrive/ANLP_Sparse_KD/ae_trained.pth'
+ae_weights_dir = '/content/drive/MyDrive/ANLP_Sparse_KD/trained_ae_2.pth'
 ae_weights = torch.load(ae_weights_dir, map_location=DEVICE)
 ae_model = KDAautoEncoder().to(DEVICE)
 ae_model.load_state_dict(ae_weights)
@@ -93,7 +93,8 @@ def build_topk_softlabels(
     probs = F.softmax(logits / temperature, dim=-1)
     topk_probs, topk_ids = torch.topk(probs, k=k, dim=-1)
 
-    _, compressedk_probs = ae_model(probs.to(dtype=probs_dtype)) # [B, T, V] -> [B, T, K=8] latent space compression by AE
+    _, compressedk_probs = ae_model(probs.to(dtype=probs_dtype)) # [B, T, V] -> [B, T, K=8] latent space compression by AE of teacher probs
+   
     
     return {
         "topk_ids": topk_ids.cpu(),
@@ -310,6 +311,7 @@ def cache_split(
 
     storage = init_storage(config.mode)
     assert "compressedk_probs" in storage["topk"].keys()  # sanity check that AE output is included in storage when topk is enabled
+    assert "sampling" not in storage.keys()  # sanity check that sampling tensors are not included in storage when sampling is not enabled
     shard_idx = 0
     batch_counter = 0
     sampling_shard_paths: list = []  # track shard paths for later merge

@@ -94,42 +94,52 @@ def compute_sampling_kd_loss(student_logits, teacher_logits, labels, k=8, temper
     loss = alpha * ce_loss + (1 - alpha) * kl_loss
     return loss, ce_loss, kl_loss
 
-def hybrid_loss(compressedk_probs, AE_model, student_logits, topk_teacher_probs, topk_indices, labels, temperature=1.0, alpha=0.5):
-    '''
-    (1) initialize an empty tensor of the same shape as top_k_teacher_probs
-    (2) loops through each row of top_k_teacher_probs and finds the max prob in that row
-    (3) if the max prob is above a certain threshold, copy the top_k_teacher_probs row to the corresponding row in the empty tensor
-    (4) if the max prob is below the threshold, copy the compressedk_probs row to the corresponding row in the empty tensor
-    (5) the new tensor will be the updated top_k_teacher_probs
-    (6) the top_k_indices will be updated use torch.topk on the new tensor
-    (7) compute the KD loss using the new top_k_teacher_probs and top_k_indices
-    '''
-    
-    # (1) - (6)
-    confidence_threshold = float(os.environ.get("CONFIDENCE_THRESHOLD", 0.5))
-    max_probs_tensor = topk_teacher_probs.max(dim=-1).values     #[B,T,K] --> [B,T]
-    confidence_mask = max_probs_tensor > confidence_threshold    #[B,T] boolean mask where True if max prob > threshold
-    updated_teacher_probs = torch.where(confidence_mask.unsqueeze(-1), topk_teacher_probs, compressedk_probs)  #[B,T,K]
-#    updated_teacher_probs = updated_teacher_probs / updated_teacher_probs.sum(dim=-1, keepdim=True)  # renormalize each row to sum to 1
-    new_topk_indices = topk_indices #torch.topk(updated_teacher_probs, k=topk_teacher_probs.size(-1), dim=-1).indices  #[B,T,K]
-    
-    # (7) compute the KD loss using the new top_k_teacher_probs and top_k_indices
-    if confidence_threshold == 0.0:
-        # confidence mask should be all true
-        assert confidence_mask.all(), "Confidence mask should be all true when threshold is 0.0"
-        assert (updated_teacher_probs == topk_teacher_probs).all(), "Updated teacher probs should match original when threshold is 0.0"
-        assert (new_topk_indices == topk_indices).all(), "New top-k indices should match original when threshold is 0.0"
-        
-        
-    assert updated_teacher_probs.shape == topk_teacher_probs.shape, f"Updated teacher probs shape {updated_teacher_probs.shape} does not match original {topk_teacher_probs.shape}"
-    assert new_topk_indices.shape == topk_indices.shape, f"New top-k indices shape {new_topk_indices.shape} does not match original {topk_indices.shape}"
-    
-    loss, ce_loss, kl_loss = compute_cached_topk_kd_loss(compressedk_probs, AE_model, student_logits, updated_teacher_probs, new_topk_indices, labels, temperature=temperature, alpha=alpha)
 
-    return loss, ce_loss, kl_loss
+def hybrid_loss(compressedk_probs, ae_model, student_logits, topk_probs, topk_ids, labels, temperature=1.0, alpha=0.5):
+    loss, ce_loss, kl_loss = compute_cached_topk_kd_loss(compressedk_probs, ae_model, student_logits, topk_probs, topk_ids, labels, temperature=temperature, alpha=alpha)
+    
+    recon_loss = compression_loss(compressedk_probs, ae_model, student_logits, topk_probs, topk_ids, labels, temperature=temperature, alpha=alpha)
+
+    total_loss = alpha * ce_loss + (1 - alpha) * recon_loss
+    
+    return total_loss, ce_loss, recon_loss
 
 
-def compute_cached_topk_kd_loss(compressedk_probs, AE_model, student_logits, topk_teacher_probs, topk_indices, labels, temperature=1.0, alpha=0.5):  #  
+def compression_loss(compressedk_probs, ae_model, student_logits, topk_probs, topk_ids, labels, temperature=1.0, alpha=0.5):
+    """
+    Computes KL(compressed_teacher || student) with optional latent regularization.
+    Args:
+        compressedk_probs: Tensor of shape (B, T, K) — Compressed Teacher distributions, softmaxed along K.
+        ae_model: The autoencoder model, used to compute the latent representation z if lambda_latent > 0.
+        student_logits: Tensor of shape (B, T, V) — Student model logits before softmax.
+        topk_probs: Tensor of shape (B, T, K) — Teacher probabilities for the top-K tokens.
+        topk_ids: Tensor of shape (B, T, K) — Token IDs corresponding to the top-K probabilities.
+        labels: Tensor of shape (B, T) — Ground truth token IDs for CE loss.
+        temperature: Temperature for scaling logits in KD loss.
+        alpha: Weighting factor between CE loss and KD loss.
+    Returns:
+        Total scalar loss (mean over batch)
+    """
+    lambda_latent = 0.0
+    z = None
+    eps = 1e-8
+    #==========================================================
+    compressedk_probs = compressedk_probs.clamp(min=eps) #[B, T, K] compressed teacher distribution in AE latent space, already softmaxed by AE
+    student_probs = F.softmax(student_logits / temperature, dim=-1) # the student logits must be softmaxed prior to AE compression, since the AE was trained on probs. 
+    _, student_probs = ae_model(student_probs)  # [B, T, V] -> [B, T, K=8] get student distribution in AE latent space. The AE latent space has a softmax in it.
+    student_probs = student_probs.clamp(min=eps)
+    # Row-wise KL divergence: KL(x || x_hat)
+    kl_recon = (compressedk_probs * (compressedk_probs.log() - student_probs.log())).sum(dim=-1).mean()
+    # Optionally regularize latent representation toward uniformity
+    if z is not None and lambda_latent > 0:
+        z = z.clamp(min=eps)
+        uniform = torch.full_like(z, 1.0 / z.size(-1))
+        kl_latent = (z * (z.log() - uniform.log())).sum(dim=-1).mean()
+        return kl_recon + lambda_latent * kl_latent
+    return kl_recon
+ 
+                    
+def compute_cached_topk_kd_loss(compressedk_probs, ae_model, student_logits, topk_teacher_probs, topk_indices, labels, temperature=1.0, alpha=0.5):  
     shift_logits = student_logits[..., :-1, :].contiguous().float()
     shift_labels = labels[..., 1:].contiguous()
     

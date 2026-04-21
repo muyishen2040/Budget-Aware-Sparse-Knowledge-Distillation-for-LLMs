@@ -65,3 +65,85 @@
                 
     # (6) the top_k_indices will be updated use torch.topk on the new tensor
     _, new_topk_indices = torch.topk(updated_teacher_probs, k=topk_teacher_probs.size(-1), dim=-1)
+
+
+
+
+
+
+
+
+    def hybrid_loss(compressedk_probs, AE_model, student_logits, topk_teacher_probs, topk_indices, labels, temperature=1.0, alpha=0.5):
+    '''
+    (1) initialize an empty tensor of the same shape as top_k_teacher_probs
+    (2) loops through each row of top_k_teacher_probs and finds the max prob in that row
+    (3) if the max prob is above a certain threshold, copy the top_k_teacher_probs row to the corresponding row in the empty tensor
+    (4) if the max prob is below the threshold, copy the compressedk_probs row to the corresponding row in the empty tensor
+    (5) the new tensor will be the updated top_k_teacher_probs
+    (6) the top_k_indices will be updated use torch.topk on the new tensor
+    (7) compute the KD loss using the new top_k_teacher_probs and top_k_indices
+    '''
+    
+    # (1) - (6)
+    confidence_threshold = float(os.environ.get("CONFIDENCE_THRESHOLD", 0.5))
+    max_probs_tensor = topk_teacher_probs.max(dim=-1).values     #[B,T,K] --> [B,T]
+    confidence_mask = max_probs_tensor > confidence_threshold    #[B,T] boolean mask where True if max prob > threshold
+    updated_teacher_probs = torch.where(confidence_mask.unsqueeze(-1), topk_teacher_probs, compressedk_probs)  #[B,T,K]
+#    updated_teacher_probs = updated_teacher_probs / updated_teacher_probs.sum(dim=-1, keepdim=True)  # renormalize each row to sum to 1
+    new_topk_indices = topk_indices #torch.topk(updated_teacher_probs, k=topk_teacher_probs.size(-1), dim=-1).indices  #[B,T,K]
+    
+    # (7) compute the KD loss using the new top_k_teacher_probs and top_k_indices
+    if confidence_threshold == 0.0:
+        # confidence mask should be all true
+        assert confidence_mask.all(), "Confidence mask should be all true when threshold is 0.0"
+        assert (updated_teacher_probs == topk_teacher_probs).all(), "Updated teacher probs should match original when threshold is 0.0"
+        assert (new_topk_indices == topk_indices).all(), "New top-k indices should match original when threshold is 0.0"
+        
+        
+    assert updated_teacher_probs.shape == topk_teacher_probs.shape, f"Updated teacher probs shape {updated_teacher_probs.shape} does not match original {topk_teacher_probs.shape}"
+    assert new_topk_indices.shape == topk_indices.shape, f"New top-k indices shape {new_topk_indices.shape} does not match original {topk_indices.shape}"
+    
+    loss, ce_loss, kl_loss = compute_cached_topk_kd_loss(compressedk_probs, AE_model, student_logits, updated_teacher_probs, new_topk_indices, labels, temperature=temperature, alpha=alpha)
+
+    return loss, ce_loss, kl_loss
+
+
+
+
+
+    
+def compute_compression_kd_loss(compressedk_probs, compressed_indices, student_logits, topk_teacher_probs, topk_indices, labels, temperature=1.0, alpha=0.5):
+    shift_logits = student_logits[..., :-1, :].contiguous().float()
+    shift_labels = labels[..., 1:].contiguous()
+    
+    ce_loss = F.cross_entropy(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+    
+    shift_compressed_teacher_probs = compressedk_probs[..., :-1, :].contiguous().float()
+    shift_compressed_indices = compressed_indices[..., :-1, :].contiguous()
+    
+    # Compute full log_softmax first to penalize non-topk probability mass
+    student_full_log_probs = F.log_softmax(shift_logits / temperature, dim=-1)
+    
+    # Gather student log_probs based on teacher's compressed_indices
+    student_log_probs = torch.gather(student_full_log_probs, dim=-1, index=shift_compressed_indices)
+    
+    # Renormalize teacher probabilities over the compressed support
+    teacher_probs = shift_compressed_teacher_probs / shift_compressed_teacher_probs.sum(dim=-1, keepdim=True)
+    
+    k = shift_compressed_indices.size(-1)
+    kl = F.kl_div(
+        student_log_probs.view(-1, k),
+        teacher_probs.view(-1, k),
+        reduction='none'
+    )
+    kl = kl.sum(dim=-1).view(*shift_labels.shape)
+    valid_mask = (shift_labels != -100)
+    
+    if valid_mask.any():
+        kl_loss = kl[valid_mask].mean() * (temperature ** 2)
+    else:
+        kl_loss = torch.zeros((), device=shift_logits.device, dtype=shift_logits.dtype)
+    
+    loss = alpha * ce_loss + (1 - alpha) * kl_loss
+    
+    return loss, ce_loss, kl_loss

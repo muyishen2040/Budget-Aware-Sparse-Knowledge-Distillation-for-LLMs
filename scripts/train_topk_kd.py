@@ -15,7 +15,7 @@ from AutoEncoder.autoencoder import KDAautoEncoder
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("LOADING AE WEIGHTS... (THIS MAY TAKE A MOMENT)")
-ae_weights_dir = '/content/drive/MyDrive/ANLP_Sparse_KD/ae_trained.pth'
+ae_weights_dir = '/content/drive/MyDrive/ANLP_Sparse_KD/trained_ae_2.pth'
 ae_weights = torch.load(ae_weights_dir, map_location=DEVICE)
 ae_model = KDAautoEncoder().to(DEVICE)
 ae_model.load_state_dict(ae_weights)
@@ -91,10 +91,12 @@ def main():
     step = 0
     final_loss = 0.
     
-    confidence_threshold = float(os.environ.get("CONFIDENCE_THRESHOLD", 0.5))
-    print(f"*** Using confidence threshold: {confidence_threshold}")
     USE_HYBRID_LOSS = os.environ.get("USE_HYBRID_LOSS", "False")
     print(f"*** Using hybrid loss: {USE_HYBRID_LOSS}")
+    
+#    if USE_HYBRID_LOSS.lower() == "true":
+#        confidence_threshold = float(os.environ.get("CONFIDENCE_THRESHOLD", 0.5))
+#        print(f"*** Confidence threshold: {confidence_threshold}")
     
     for epoch in range(num_epochs):
         for batch in tqdm(train_loader):
@@ -108,7 +110,9 @@ def main():
             k = args.k
             topk_probs = batch["topk_probs"][..., :k].to(input_device)
             topk_ids = batch["topk_ids"][..., :k].to(input_device)
-            compressedk_probs = batch["compressedk_probs"].to(input_device)            
+            compressedk_probs = batch["compressedk_probs"].to(input_device)    
+            
+                    
             student_outputs = student(input_ids=input_ids, attention_mask=attention_mask)
             student_logits = student_outputs.logits
             
