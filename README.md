@@ -68,7 +68,6 @@ sparse_kd/
 git clone <repo-url> sparse_kd
 cd sparse_kd
 # Activate your virtual environment
-source /opt/pytorch/bin/activate
 pip install -r requirements.txt
 ```
 
