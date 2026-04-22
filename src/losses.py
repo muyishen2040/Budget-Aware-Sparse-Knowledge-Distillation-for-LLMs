@@ -100,7 +100,7 @@ def hybrid_loss(compressedk_probs, ae_model, student_logits, topk_probs, topk_id
     
     recon_loss = compression_loss(compressedk_probs, ae_model, student_logits, topk_probs, topk_ids, labels, temperature=temperature, alpha=alpha)
 
-    total_loss = alpha * ce_loss + (1 - alpha) * recon_loss
+    total_loss = alpha * ce_loss + (1 - alpha)/2 * kl_loss + (1 - alpha)/2 * recon_loss
     
     return total_loss, ce_loss, recon_loss
 
