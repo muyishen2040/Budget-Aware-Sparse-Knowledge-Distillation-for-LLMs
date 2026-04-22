@@ -13,8 +13,8 @@ from src.data import get_dataloaders
 
 @dataclass
 class CacheConfig:
-    # which caches to create: "topk", "sampling", or "both"
-    mode: Literal["topk", "sampling", "both"] = "both"
+    # which caches to create: "topk", "sampling", "both", or "adaptive_topk"
+    mode: Literal["topk", "sampling", "both", "adaptive_topk"] = "both"
 
     # data
     seq_len: int = 256
@@ -32,6 +32,11 @@ class CacheConfig:
     # random sampling KD settings
     sampling_num_draws: int = 50
     temperature: float = 1.0  # unified temperature
+
+    # adaptive top-k settings
+    adaptive_k_choices: tuple = (4, 8, 16)
+    entropy_low: float = 1.5   # H < low  -> K=4
+    entropy_high: float = 3.5  # H >= high -> K=16, else K=8
 
     # dtype to store probabilities
     probs_dtype: torch.dtype = torch.float32
@@ -81,6 +86,67 @@ def build_topk_softlabels(
     return {
         "topk_ids": topk_ids.cpu(),
         "topk_probs": topk_probs.to(dtype=probs_dtype).cpu(),
+    }
+
+
+def build_adaptive_topk_softlabels(
+    logits: torch.Tensor,
+    k_choices: tuple = (4, 8, 16),
+    entropy_low: float = 1.5,
+    entropy_high: float = 3.5,
+    temperature: float = 1.0,
+    probs_dtype: torch.dtype = torch.float32,
+) -> Dict[str, torch.Tensor]:
+    """
+    Build adaptive Top-K teacher soft labels.
+
+    For each token, compute teacher entropy H, then:
+      - H < entropy_low   -> K = k_choices[0]  (e.g. 4)
+      - entropy_low <= H < entropy_high -> K = k_choices[1]  (e.g. 8)
+      - H >= entropy_high  -> K = k_choices[2]  (e.g. 16)
+
+    Returns:
+        {
+            "adaptive_topk_ids":      [B, T, K_max]  padded with -1
+            "adaptive_topk_probs":    [B, T, K_max]  padded with 0
+            "adaptive_topk_valid_k":  [B, T]          actual K per token (int8)
+            "adaptive_topk_entropy":  [B, T]          entropy per token
+        }
+    where K_max = max(k_choices).
+    """
+    k_low, k_mid, k_max = k_choices
+    assert k_low < k_mid < k_max, f"k_choices must be strictly increasing, got {k_choices}"
+
+    probs = F.softmax(logits / temperature, dim=-1)          # [B, T, V]
+    log_probs = torch.log(probs + 1e-10)
+    entropy = -torch.sum(probs * log_probs, dim=-1)          # [B, T]
+
+    # Get top-K_max for all tokens (superset of what we need)
+    topk_probs_full, topk_ids_full = torch.topk(probs, k=k_max, dim=-1)  # [B, T, K_max]
+
+    B, T = entropy.shape
+
+    # Determine per-token K
+    valid_k = torch.full((B, T), k_max, dtype=torch.int8, device=logits.device)
+    valid_k[entropy < entropy_low] = k_low
+    valid_k[(entropy >= entropy_low) & (entropy < entropy_high)] = k_mid
+
+    # Build mask: position j is valid iff j < valid_k[b, t]
+    j_idx = torch.arange(k_max, device=logits.device).unsqueeze(0).unsqueeze(0)  # [1, 1, K_max]
+    valid_mask = j_idx < valid_k.unsqueeze(-1)  # [B, T, K_max]
+
+    # Pad invalid positions
+    adaptive_ids = topk_ids_full.clone()
+    adaptive_ids[~valid_mask] = -1
+
+    adaptive_probs = topk_probs_full.clone()
+    adaptive_probs[~valid_mask] = 0.0
+
+    return {
+        "adaptive_topk_ids": adaptive_ids.cpu(),
+        "adaptive_topk_probs": adaptive_probs.to(dtype=probs_dtype).cpu(),
+        "adaptive_topk_valid_k": valid_k.cpu(),
+        "adaptive_topk_entropy": entropy.to(dtype=torch.float32).cpu(),
     }
 
 
@@ -186,6 +252,17 @@ def init_storage(mode: str) -> Dict[str, Dict[str, list]]:
             "sampled_probs": [],
         }
 
+    if mode == "adaptive_topk":
+        storage["adaptive_topk"] = {
+            "input_ids": [],
+            "attention_mask": [],
+            "labels": [],
+            "adaptive_topk_ids": [],
+            "adaptive_topk_probs": [],
+            "adaptive_topk_valid_k": [],
+            "adaptive_topk_entropy": [],
+        }
+
     return storage
 
 
@@ -222,6 +299,8 @@ def make_output_paths(config: CacheConfig, split_name: str) -> Dict[str, str]:
         out["topk"] = os.path.join(config.cache_dir, f"topk_{split_name}.pt")
     if config.mode in ("sampling", "both"):
         out["sampling"] = os.path.join(config.cache_dir, f"sampling_{split_name}.pt")
+    if config.mode == "adaptive_topk":
+        out["adaptive_topk"] = os.path.join(config.cache_dir, f"adaptive_topk_{split_name}.pt")
     return out
 
 
@@ -324,6 +403,21 @@ def cache_split(
             storage["sampling"]["sampled_counts"].append(sampling_out["sampled_counts"])
             storage["sampling"]["sampled_probs"].append(sampling_out["sampled_probs"])
 
+        if config.mode == "adaptive_topk":
+            adaptive_out = build_adaptive_topk_softlabels(
+                logits=logits,
+                k_choices=config.adaptive_k_choices,
+                entropy_low=config.entropy_low,
+                entropy_high=config.entropy_high,
+                temperature=config.temperature,
+                probs_dtype=config.probs_dtype,
+            )
+            append_common_tensors(storage["adaptive_topk"], input_ids, attention_mask, labels)
+            storage["adaptive_topk"]["adaptive_topk_ids"].append(adaptive_out["adaptive_topk_ids"])
+            storage["adaptive_topk"]["adaptive_topk_probs"].append(adaptive_out["adaptive_topk_probs"])
+            storage["adaptive_topk"]["adaptive_topk_valid_k"].append(adaptive_out["adaptive_topk_valid_k"])
+            storage["adaptive_topk"]["adaptive_topk_entropy"].append(adaptive_out["adaptive_topk_entropy"])
+
         batch_counter += 1
 
         should_shard = (
@@ -374,6 +468,21 @@ def cache_split(
             save_payload(out_paths["topk"], topk_payload)
         else:
             save_shard(storage, config, split_name, shard_idx)
+
+    # Remaining adaptive_topk (always single-file)
+    if "adaptive_topk" in storage and len(storage["adaptive_topk"]["input_ids"]) > 0:
+        out_paths = make_output_paths(config, split_name)
+        adaptive_payload = concat_storage(storage["adaptive_topk"])
+        adaptive_payload["meta"] = {
+            "split": split_name,
+            "cache_type": "adaptive_topk",
+            "k_choices": list(config.adaptive_k_choices),
+            "entropy_low": config.entropy_low,
+            "entropy_high": config.entropy_high,
+            "seq_len": config.seq_len,
+            "temperature": config.temperature,
+        }
+        save_payload(out_paths["adaptive_topk"], adaptive_payload)
 
     # Remaining sampling
     if "sampling" in storage and len(storage["sampling"]["input_ids"]) > 0:
@@ -427,7 +536,7 @@ Dataset keys (for --dataset):
   pubmed              PubMed abstracts
 """
     )
-    parser.add_argument("--mode", type=str, default="both", choices=["topk", "sampling", "both"])
+    parser.add_argument("--mode", type=str, default="both", choices=["topk", "sampling", "both", "adaptive_topk"])
     parser.add_argument("--seq_len", type=int, default=256)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--num_train_samples", type=int, default=2000)
@@ -435,6 +544,8 @@ Dataset keys (for --dataset):
     parser.add_argument("--topk_k", type=int, default=8)
     parser.add_argument("--sampling_num_draws", type=int, default=50)
     parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--entropy_low", type=float, default=1.5, help="Entropy threshold for low uncertainty (K=4)")
+    parser.add_argument("--entropy_high", type=float, default=3.5, help="Entropy threshold for high uncertainty (K=16)")
     parser.add_argument(
         "--dataset", type=str, default="wikitext",
         help="Dataset key: 'wikitext', 'github-code', 'github-code-python', 'pubmed'"
@@ -453,6 +564,8 @@ Dataset keys (for --dataset):
         sampling_num_draws=args.sampling_num_draws,
         temperature=args.temperature,
         probs_dtype=torch.float32,
+        entropy_low=args.entropy_low,
+        entropy_high=args.entropy_high,
     )
 
     teacher, tokenizer = load_teacher()

@@ -11,9 +11,10 @@ def main():
     parser.add_argument("--model_path", type=str, required=True, help="Path to trained student model")
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--seq_len", type=int, default=256)
-    parser.add_argument("--method", type=str, required=True, choices=["full", "topk", "sampling"], help="Method type to calculate budget")
+    parser.add_argument("--method", type=str, required=True, choices=["full", "topk", "sampling", "adaptive_topk"], help="Method type to calculate budget")
     parser.add_argument("--k", type=int, default=8, help="Budget param for TopK")
     parser.add_argument("--num_draws", type=int, default=50, help="Budget param for Sampling")
+    parser.add_argument("--avg_k", type=float, default=0.0, help="Average K for adaptive_topk budget (reported by training script)")
     parser.add_argument("--cache_path", type=str, default=None, help="Path to cache file to measure size")
     parser.add_argument("--log_file", type=str, default="experiment_log.csv")
     parser.add_argument("--num_train_samples", type=int, default=0)
@@ -78,7 +79,7 @@ def main():
     avg_ce_loss = total_ce_loss / total_tokens
     
     # Calculate budget info
-    budget_kwargs = {"k": args.k, "num_draws": args.num_draws}
+    budget_kwargs = {"k": args.k, "num_draws": args.num_draws, "avg_k": args.avg_k if args.avg_k > 0 else 16.0}
     
     # Print the evaluation summary
     print_evaluation_summary(args.method, avg_ce_loss, args.cache_path, **budget_kwargs)
@@ -86,7 +87,15 @@ def main():
     # Append to CSV
     metrics = compute_lm_metrics(avg_ce_loss)
     import os
-    budget = args.k * 2 if args.method == "topk" else (args.num_draws * 2 if args.method == "sampling" else 50277)
+    if args.method == "topk":
+        budget = args.k * 2
+    elif args.method == "sampling":
+        budget = args.num_draws * 2
+    elif args.method == "adaptive_topk":
+        avg_k = args.avg_k if args.avg_k > 0 else 16.0
+        budget = int(round(avg_k * 2))
+    else:
+        budget = 50277
     size_mb = os.path.getsize(args.cache_path) / (1024 * 1024) if args.cache_path and os.path.exists(args.cache_path) else 0.0
 
     import csv

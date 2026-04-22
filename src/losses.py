@@ -209,3 +209,282 @@ def compute_cached_sampling_kd_loss(
 
     loss = alpha * ce_loss + (1.0 - alpha) * kd_loss
     return loss, ce_loss, kd_loss
+
+
+def compute_cached_adaptive_topk_kd_loss(
+    student_logits,
+    topk_teacher_probs,
+    topk_indices,
+    valid_k,
+    labels,
+    temperature=1.0,
+    alpha=0.1,
+    ignore_index=-100,
+):
+    """
+    Adaptive Top-K cached KD loss.
+
+    student_logits:      [B, T, V]
+    topk_teacher_probs:  [B, T, K_max]  padded with 0
+    topk_indices:        [B, T, K_max]  padded with -1
+    valid_k:             [B, T]          actual K per token (4, 8, or 16)
+    labels:              [B, T]
+
+    Returns:
+        loss, ce_loss, kd_loss
+    """
+    # Standard next-token shift
+    shift_student_logits = student_logits[..., :-1, :].contiguous().float()   # [B, T-1, V]
+    shift_labels = labels[..., 1:].contiguous()                               # [B, T-1]
+
+    shift_teacher_probs = topk_teacher_probs[..., :-1, :].contiguous().float()  # [B, T-1, K_max]
+    shift_indices = topk_indices[..., :-1, :].contiguous()                      # [B, T-1, K_max]
+    shift_valid_k = valid_k[..., :-1].contiguous()                              # [B, T-1]
+
+    K_max = shift_indices.size(-1)
+
+    # CE loss
+    ce_loss = F.cross_entropy(
+        shift_student_logits.view(-1, shift_student_logits.size(-1)),
+        shift_labels.view(-1),
+        ignore_index=ignore_index,
+    )
+
+    # Build valid mask from valid_k: position j is valid iff j < valid_k[b, t]
+    j_idx = torch.arange(K_max, device=shift_student_logits.device).unsqueeze(0).unsqueeze(0)  # [1, 1, K_max]
+    valid_mask = j_idx < shift_valid_k.unsqueeze(-1)  # [B, T-1, K_max]
+
+    # Safe gather indices (replace -1 with 0 for gather, then mask out)
+    safe_indices = shift_indices.masked_fill(~valid_mask, 0)
+
+    # Full-vocab normalization, then gather at adaptive positions
+    student_full_log_probs = F.log_softmax(
+        shift_student_logits / temperature, dim=-1
+    )  # [B, T-1, V]
+
+    gathered_student_log_probs = torch.gather(
+        student_full_log_probs, dim=-1, index=safe_indices
+    )  # [B, T-1, K_max]
+
+    # Zero out padded positions
+    gathered_student_log_probs = gathered_student_log_probs.masked_fill(~valid_mask, 0.0)
+    teacher_probs = shift_teacher_probs.masked_fill(~valid_mask, 0.0)
+
+    # Renormalize teacher probs over valid entries to sum to 1
+    teacher_prob_sum = teacher_probs.sum(dim=-1, keepdim=True).clamp(min=1e-9)
+    teacher_probs_norm = teacher_probs / teacher_prob_sum
+
+    # KL(teacher_norm || student)
+    kl_per_entry = F.kl_div(
+        gathered_student_log_probs,
+        teacher_probs_norm,
+        reduction="none",
+        log_target=False,
+    ).sum(dim=-1)  # [B, T-1]
+
+    # Only keep positions valid for both CE and KD
+    valid_token_mask = (shift_labels != ignore_index) & valid_mask.any(dim=-1)
+
+    if valid_token_mask.any():
+        kd_loss = kl_per_entry[valid_token_mask].mean() * (temperature ** 2)
+    else:
+        kd_loss = torch.zeros((), device=student_logits.device, dtype=shift_student_logits.dtype)
+
+    loss = alpha * ce_loss + (1.0 - alpha) * kd_loss
+    return loss, ce_loss, kd_loss
+
+
+def compute_cached_adaptive_topk_weighted_kd_loss(
+    student_logits,
+    topk_teacher_probs,
+    topk_indices,
+    valid_k,
+    labels,
+    temperature=1.0,
+    alpha=0.1,
+    normalize_weights=False,
+    min_weight=0.0,
+    ignore_index=-100,
+):
+    """
+    Head-Mass Weighted Adaptive Top-K KD loss.
+
+    Same as compute_cached_adaptive_topk_kd_loss, but each token's KL
+    contribution is weighted by the teacher's head mass (sum of raw Top-K
+    probs before renormalization). Confident teacher positions get full
+    weight; uncertain positions are naturally downweighted.
+
+    Args:
+        normalize_weights: If True, divide weights by their batch mean so
+            the total gradient magnitude is preserved (redistribution only).
+        min_weight: Floor for the per-token weight. Ensures every position
+            contributes at least this fraction of the KD signal.
+            E.g., min_weight=0.5 means even the most uncertain token gets
+            at least 50% KD contribution.
+    """
+    shift_student_logits = student_logits[..., :-1, :].contiguous().float()
+    shift_labels = labels[..., 1:].contiguous()
+
+    shift_teacher_probs = topk_teacher_probs[..., :-1, :].contiguous().float()
+    shift_indices = topk_indices[..., :-1, :].contiguous()
+    shift_valid_k = valid_k[..., :-1].contiguous()
+
+    K_max = shift_indices.size(-1)
+
+    # CE loss (unchanged)
+    ce_loss = F.cross_entropy(
+        shift_student_logits.view(-1, shift_student_logits.size(-1)),
+        shift_labels.view(-1),
+        ignore_index=ignore_index,
+    )
+
+    # Build valid mask
+    j_idx = torch.arange(K_max, device=shift_student_logits.device).unsqueeze(0).unsqueeze(0)
+    valid_mask = j_idx < shift_valid_k.unsqueeze(-1)
+
+    safe_indices = shift_indices.masked_fill(~valid_mask, 0)
+
+    # Full-vocab normalization, then gather
+    student_full_log_probs = F.log_softmax(
+        shift_student_logits / temperature, dim=-1
+    )
+
+    gathered_student_log_probs = torch.gather(
+        student_full_log_probs, dim=-1, index=safe_indices
+    )
+
+    gathered_student_log_probs = gathered_student_log_probs.masked_fill(~valid_mask, 0.0)
+    teacher_probs = shift_teacher_probs.masked_fill(~valid_mask, 0.0)
+
+    # Head mass = sum of raw teacher probs over valid K (before renormalization)
+    # This is our per-token confidence weight: high mass = confident teacher
+    head_mass = teacher_probs.sum(dim=-1)  # [B, T-1]
+
+    # Apply minimum weight floor
+    weights = head_mass.clamp(min=min_weight)  # [B, T-1]
+
+    # Optionally normalize to preserve total gradient magnitude
+    if normalize_weights:
+        valid_token_mask_for_norm = (shift_labels != ignore_index) & valid_mask.any(dim=-1)
+        if valid_token_mask_for_norm.any():
+            mean_w = weights[valid_token_mask_for_norm].mean().clamp(min=1e-9)
+            weights = weights / mean_w
+
+    # Renormalize teacher probs for KL computation
+    teacher_prob_sum = head_mass.unsqueeze(-1).clamp(min=1e-9)
+    teacher_probs_norm = teacher_probs / teacher_prob_sum
+
+    # KL(teacher_norm || student)
+    kl_per_entry = F.kl_div(
+        gathered_student_log_probs,
+        teacher_probs_norm,
+        reduction="none",
+        log_target=False,
+    ).sum(dim=-1)  # [B, T-1]
+
+    # Weight KL by confidence weight
+    weighted_kl = weights * kl_per_entry  # [B, T-1]
+
+    valid_token_mask = (shift_labels != ignore_index) & valid_mask.any(dim=-1)
+
+    if valid_token_mask.any():
+        kd_loss = weighted_kl[valid_token_mask].mean() * (temperature ** 2)
+    else:
+        kd_loss = torch.zeros((), device=student_logits.device, dtype=shift_student_logits.dtype)
+
+    loss = alpha * ce_loss + (1.0 - alpha) * kd_loss
+    return loss, ce_loss, kd_loss
+
+
+def compute_cached_adaptive_topk_tail_summary_kd_loss(
+    student_logits,
+    topk_teacher_probs,
+    topk_indices,
+    valid_k,
+    labels,
+    temperature=1.0,
+    alpha=0.1,
+    tail_weight=0.1,
+    ignore_index=-100,
+):
+    """
+    Adaptive Top-K Tail Summary cached KD loss.
+
+    Computes KL divergence on K+1 classes dynamically per token,
+    with separate weighting for the head (Top-K) and tail (summary bucket)
+    components of the KD loss.
+
+    Args:
+        tail_weight: Coefficient (beta) controlling how strongly the tail
+            calibration signal influences training. 0.0 = pure Adaptive Top-K
+            (no tail), 1.0 = equal weight to head and tail KL.
+    """
+    shift_student_logits = student_logits[..., :-1, :].contiguous().float()   # [B, T-1, V]
+    shift_labels = labels[..., 1:].contiguous()                               # [B, T-1]
+
+    shift_teacher_probs = topk_teacher_probs[..., :-1, :].contiguous().float()  # [B, T-1, K_max]
+    shift_indices = topk_indices[..., :-1, :].contiguous()                      # [B, T-1, K_max]
+    shift_valid_k = valid_k[..., :-1].contiguous()                              # [B, T-1]
+
+    K_max = shift_indices.size(-1)
+
+    ce_loss = F.cross_entropy(
+        shift_student_logits.view(-1, shift_student_logits.size(-1)),
+        shift_labels.view(-1),
+        ignore_index=ignore_index,
+    )
+
+    # Build valid mask
+    j_idx = torch.arange(K_max, device=shift_student_logits.device).unsqueeze(0).unsqueeze(0)
+    valid_mask = j_idx < shift_valid_k.unsqueeze(-1)  # [B, T-1, K_max]
+
+    safe_indices = shift_indices.masked_fill(~valid_mask, 0)
+
+    # Full-vocab student log probs (for head KL, computed over full vocab normalization)
+    student_full_log_probs = F.log_softmax(shift_student_logits / temperature, dim=-1)  # [B, T-1, V]
+    student_full_probs = F.softmax(shift_student_logits / temperature, dim=-1)           # [B, T-1, V]
+
+    gathered_student_log_probs = torch.gather(
+        student_full_log_probs, dim=-1, index=safe_indices
+    )  # [B, T-1, K_max]
+    gathered_student_probs = torch.gather(
+        student_full_probs, dim=-1, index=safe_indices
+    )  # [B, T-1, K_max]
+
+    # Zero out padded positions
+    gathered_student_log_probs = gathered_student_log_probs.masked_fill(~valid_mask, 0.0)
+    gathered_student_probs = gathered_student_probs.masked_fill(~valid_mask, 0.0)
+    teacher_probs = shift_teacher_probs.masked_fill(~valid_mask, 0.0)
+
+    # --- Head KL: standard adaptive top-K KL (renormalized teacher over valid K) ---
+    teacher_prob_sum = teacher_probs.sum(dim=-1, keepdim=True).clamp(min=1e-9)
+    teacher_probs_norm = teacher_probs / teacher_prob_sum
+
+    head_kl_per_entry = F.kl_div(
+        gathered_student_log_probs,
+        teacher_probs_norm,
+        reduction="none",
+        log_target=False,
+    ).sum(dim=-1)  # [B, T-1]
+
+    # --- Tail KL: single-bucket calibration term ---
+    student_tail_mass = (1.0 - gathered_student_probs.sum(dim=-1)).clamp(min=1e-9)  # [B, T-1]
+    teacher_tail_mass = (1.0 - teacher_probs.sum(dim=-1)).clamp(min=1e-9)           # [B, T-1]
+
+    # KL for a single Bernoulli-like bucket: t * log(t/s)
+    tail_kl_per_entry = teacher_tail_mass * (
+        torch.log(teacher_tail_mass) - torch.log(student_tail_mass)
+    )  # [B, T-1]
+
+    # Combined KD loss with tail weight
+    kl_per_entry = head_kl_per_entry + tail_weight * tail_kl_per_entry
+
+    valid_token_mask = (shift_labels != ignore_index) & valid_mask.any(dim=-1)
+
+    if valid_token_mask.any():
+        kd_loss = kl_per_entry[valid_token_mask].mean() * (temperature ** 2)
+    else:
+        kd_loss = torch.zeros((), device=student_logits.device, dtype=shift_student_logits.dtype)
+
+    loss = alpha * ce_loss + (1.0 - alpha) * kd_loss
+    return loss, ce_loss, kd_loss
