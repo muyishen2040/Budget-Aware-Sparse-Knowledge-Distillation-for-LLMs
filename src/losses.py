@@ -96,6 +96,10 @@ def compute_sampling_kd_loss(student_logits, teacher_logits, labels, k=8, temper
 
 
 def hybrid_loss(compressedk_probs, ae_model, student_logits, topk_probs, topk_ids, labels, temperature=1.0, alpha=0.5):
+    '''
+    Adds a compression loss term of the standard KD loss.
+    '''
+                            
     loss, ce_loss, kl_loss = compute_cached_topk_kd_loss(compressedk_probs, ae_model, student_logits, topk_probs, topk_ids, labels, temperature=temperature, alpha=alpha)
     
     recon_loss = compression_loss(compressedk_probs, ae_model, student_logits, topk_probs, topk_ids, labels, temperature=temperature, alpha=alpha)
@@ -120,16 +124,21 @@ def compression_loss(compressedk_probs, ae_model, student_logits, topk_probs, to
     Returns:
         Total scalar loss (mean over batch)
     """
+    # Time-shift the student logits and compressed teacher probs to align with next-token prediction
+    student_logits = student_logits[..., :-1, :].contiguous().float()  # [B, T-1, V]
+    compressedk_probs = compressedk_probs[..., :-1, :].contiguous().float()  # [B, T-1, K]
+    
+    # Hyperparameters for optional latent regularization
     lambda_latent = 0.0
     z = None
     eps = 1e-8
-    #==========================================================
-    compressedk_probs = compressedk_probs.clamp(min=eps) #[B, T, K] compressed teacher distribution in AE latent space, already softmaxed by AE
+    
+    # Compute the compression loss: KL(compressed_teacher || student)
+    compressedk_probs = compressedk_probs.clamp(min=eps) #[B, T-1, K] compressed teacher distribution in AE latent space, already softmaxed by AE
     student_probs = F.softmax(student_logits / temperature, dim=-1) # the student logits must be softmaxed prior to AE compression, since the AE was trained on probs. 
-    _, student_probs = ae_model(student_probs.to(dtype=torch.float32))  # [B, T, V] -> [B, T, K=8] get student distribution in AE latent space. The AE latent space has a softmax in it.
+    _, student_probs = ae_model(student_probs.to(dtype=torch.float32))  # [B, T-1, V] -> [B, T-1, K=8] get student distribution in AE latent space. The AE latent space has a softmax in it.
     student_probs = student_probs.clamp(min=eps)
-    # Row-wise KL divergence: KL(x || x_hat)
-    kl_recon = (compressedk_probs * (compressedk_probs.log() - student_probs.log())).sum(dim=-1).mean()
+    kl_recon = (compressedk_probs * (compressedk_probs.log() - student_probs.log())).sum(dim=-1).mean()  # Row-wise KL divergence: KL(x || x_hat)
     # Optionally regularize latent representation toward uniformity
     if z is not None and lambda_latent > 0:
         z = z.clamp(min=eps)
@@ -138,7 +147,72 @@ def compression_loss(compressedk_probs, ae_model, student_logits, topk_probs, to
         return kl_recon + lambda_latent * kl_latent
     return kl_recon
  
-                    
+def compute_fusion_loss(compressedk_probs, ae_model, student_logits, topk_teacher_probs, topk_indices, labels, temperature=1.0, alpha=0.5):
+    '''
+    A more complex loss that adaptively fuses the standard KD loss on the teacher's top-k predictions with the AE-based compression loss based on the teacher's confidence. 
+    For positions where the teacher is confident in its top-k predictions, we apply the standard KD loss. 
+    For positions where the teacher is not confident, we apply the compression loss which distills the student to match the teacher's compressed distribution in the AE latent space. 
+    The intuition is that when the teacher is uncertain, its full distribution may be noisy and unhelpful for distillation, so we fall back to a softer signal from the compressed
+    distribution which may still capture useful information about which tokens are generally more likely than others without forcing the student to match potentially spurious peaks 
+    in the teacher's distribution.
+    '''
+
+    # (1) shift the student_logits, topk_teacher_probs, and topk_indices along the time dimension by one step
+    student_logits = student_logits[..., :-1, :].contiguous().float()  # [B, T-1, V]
+    topk_prob = topk_teacher_probs[..., :-1, :].contiguous().float()  # [B, T-1, K]
+    topk_ids = topk_indices[..., :-1, :].contiguous() # [B, T-1, K]
+
+    # (2) find the row-wise max prob over topk_prob, which is the teacher's confidence in its top-k predictions for each position
+    prob_max = torch.amax(topk_prob, dim=-1)  # [B, T-1]
+    confidence_threshold = float(os.environ.get("CONFIDENCE_THRESHOLD", 0.5))
+    M = (prob_max >= confidence_threshold) 
+    
+    # (3) use the mask 'M' to partition out the rows from the student_logits, topk_prob, and topk_ids where the teacher is confident vs. not confident
+    # (a) topk_probs. Let N+ be the number of positions where the teacher is confident, and N- be the number of positions where the teacher is not confident. Then we have:
+    topk_confident_probs = topk_prob[M]  # [N+, K]
+    topk_unconfident_probs = topk_prob[~M]  # [N-, K]
+    # (b) topk_indices
+    topk_confident_ids = topk_ids[M]  # [N+, K]
+    topk_unconfident_ids = topk_ids[~M]  # [N-, K]
+    # (c) student_logits
+    student_confident_logits = student_logits[M]  # [N+, V]
+    student_unconfident_logits = student_logits[~M]  # [N-, V]
+    
+    # (4) for the confident rows, compute the log softmax of the student logits, gatther the log probs at the teacher's top-k indices, and compute the KL divergence loss between the student and teacher top-k distributions as in standard top-k KD
+    if student_confident_logits is not None and student_confident_logits.shape[0] > 0:
+      student_full_logprobs_confident = F.log_softmax(student_confident_logits / temperature, dim=-1)  # [N+, V]
+      student_logprobs_confident = torch.gather(student_full_logprobs_confident, dim=-1, index=topk_confident_ids)  # [N+, K]
+      teacher_probs_confident = topk_confident_probs / topk_confident_probs.sum(dim=-1, keepdim=True)  # renormalize to ensure it's a valid distribution over the top-k support
+      k = topk_ids.size(-1)
+      kl_confident = F.kl_div(
+        student_logprobs_confident.view(-1, k),
+        teacher_probs_confident.view(-1, k),
+        reduction='batchmean'
+      ) * (temperature ** 2)
+    else:
+      kl_confident = 0.0
+
+    # (5) for the unconfident rows, first the ae_model must be used to compress the vocab dimension from V --> K
+    if student_unconfident_logits is not None and student_unconfident_logits.shape[0] > 0:
+      student_unconfident_fullprobs = F.softmax(student_unconfident_logits / temperature, dim=-1)  # [N-, V]   
+      _, student_unconfident_probs = ae_model(student_unconfident_fullprobs.to(dtype=torch.float32))# [N-, V] -> [N-, K]
+      student_unconfident_logprobs = torch.log(student_unconfident_probs)  # don't forget that we need log probs of x_hat for KL 
+      teacher_probs_unconfident = topk_unconfident_probs / topk_unconfident_probs.sum(dim=-1, keepdim=True)  # renormalize to ensure it's a valid distribution over the top-k support
+      k = topk_ids.size(-1)
+      kl_unconfident = F.kl_div(
+            student_unconfident_logprobs.view(-1, k),
+            teacher_probs_unconfident.view(-1, k),
+            reduction='batchmean'
+        ) * (temperature ** 2)
+    else:
+        kl_unconfident = 0.0
+
+    # (6) compute the final loss as a weighted average of the confident vs. unconfident KL losses, using alpha to weight against the CE loss as well
+    ce_loss = F.cross_entropy(student_logits.view(-1, student_logits.size(-1)), labels[..., 1:].contiguous().view(-1))
+    loss = alpha * ce_loss + (1 - alpha) * (kl_confident + kl_unconfident) 
+    return loss, ce_loss, (kl_confident + kl_unconfident)
+            
+                 
 def compute_cached_topk_kd_loss(compressedk_probs, ae_model, student_logits, topk_teacher_probs, topk_indices, labels, temperature=1.0, alpha=0.5):  
     shift_logits = student_logits[..., :-1, :].contiguous().float()
     shift_labels = labels[..., 1:].contiguous()

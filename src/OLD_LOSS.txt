@@ -146,4 +146,4 @@ def compute_compression_kd_loss(compressedk_probs, compressed_indices, student_l
     
     loss = alpha * ce_loss + (1 - alpha) * kl_loss
     
-    return loss, ce_loss, kl_loss
+    return loss, ce_loss, kl_lossf

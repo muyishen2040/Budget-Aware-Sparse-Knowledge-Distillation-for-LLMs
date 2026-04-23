@@ -6,7 +6,7 @@ from torch.optim import AdamW
 from transformers import get_linear_schedule_with_warmup
 from src.models import load_student
 from src.data import get_cached_dataloaders
-from src.losses import compute_cached_topk_kd_loss, hybrid_loss
+from src.losses import compute_cached_topk_kd_loss, hybrid_loss, compute_fusion_loss
 from src.eval_utils import compute_lm_metrics
 import time
 from tqdm import tqdm
@@ -93,10 +93,11 @@ def main():
     
     USE_HYBRID_LOSS = os.environ.get("USE_HYBRID_LOSS", "False")
     print(f"*** Using hybrid loss: {USE_HYBRID_LOSS}")
-    
-#    if USE_HYBRID_LOSS.lower() == "true":
-#        confidence_threshold = float(os.environ.get("CONFIDENCE_THRESHOLD", 0.5))
-#        print(f"*** Confidence threshold: {confidence_threshold}")
+    USE_FUSION_LOSS = os.environ.get("USE_FUSION_LOSS", "False")
+    print(f"*** Using fusion loss: {USE_FUSION_LOSS}")
+    if USE_HYBRID_LOSS.lower() == "true":
+        confidence_threshold = float(os.environ.get("CONFIDENCE_THRESHOLD", 0.5))
+        print(f" --> *** Confidence threshold: {confidence_threshold}")
     
     for epoch in range(num_epochs):
         for batch in tqdm(train_loader):
@@ -111,14 +112,15 @@ def main():
             topk_probs = batch["topk_probs"][..., :k].to(input_device)
             topk_ids = batch["topk_ids"][..., :k].to(input_device)
             compressedk_probs = batch["compressedk_probs"].to(input_device)    
-            
-                    
+              
             student_outputs = student(input_ids=input_ids, attention_mask=attention_mask)
             student_logits = student_outputs.logits
             
-            
             if USE_HYBRID_LOSS.lower() == "true":
-                loss, ce_loss, kl_loss = hybrid_loss(compressedk_probs, ae_model, student_logits, topk_probs, topk_ids, labels, temperature=args.temperature, alpha=args.alpha)
+                if USE_FUSION_LOSS.lower() == "true":
+                    loss, ce_loss, kl_loss = compute_fusion_loss(compressedk_probs, ae_model, student_logits, topk_probs, topk_ids, labels, temperature=args.temperature, alpha=args.alpha)
+                else:
+                    loss, ce_loss, kl_loss = hybrid_loss(compressedk_probs, ae_model, student_logits, topk_probs, topk_ids, labels, temperature=args.temperature, alpha=args.alpha)
             else:
                 loss, ce_loss, kl_loss = compute_cached_topk_kd_loss(compressedk_probs, ae_model, student_logits, topk_probs, topk_ids, labels, temperature=args.temperature, alpha=args.alpha)
             
