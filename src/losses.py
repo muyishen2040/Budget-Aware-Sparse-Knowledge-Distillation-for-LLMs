@@ -194,8 +194,8 @@ def compute_fusion_loss(compressedk_probs, ae_model, student_logits, topk_teache
             teacher_probs_confident.view(-1, k),
             reduction='none'
         ) 
-        kl_confident_tensor = kl_confident_tensor.sum(dim=-1).view(*shift_labels.shape)
-        valid_mask = (shift_labels != -100)
+        kl_confident_tensor = kl_confident_tensor.sum(dim=-1).view(*shift_labels[M].shape) #shape of shift_labels[M] = [N+, ]
+        valid_mask = (shift_labels[M] != -100)
         
         if valid_mask.any():
             kl_confident = kl_confident_tensor[valid_mask].mean() * (temperature ** 2)
@@ -218,8 +218,8 @@ def compute_fusion_loss(compressedk_probs, ae_model, student_logits, topk_teache
             teacher_probs_unconfident.view(-1, k),
             reduction='none'
         ) 
-        kl_unconfident_tensor = kl_unconfident_tensor.sum(dim=-1).view(*shift_labels.shape)
-        valid_mask = (shift_labels != -100)
+        kl_unconfident_tensor = kl_unconfident_tensor.sum(dim=-1).view(*shift_labels[~M].shape)
+        valid_mask = (shift_labels[~M] != -100)
         if valid_mask.any():
             kl_unconfident = kl_unconfident_tensor[valid_mask].mean() * (temperature ** 2)
         else:
