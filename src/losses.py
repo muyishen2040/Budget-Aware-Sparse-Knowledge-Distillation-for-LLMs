@@ -166,7 +166,7 @@ def compute_fusion_loss(compressedk_probs, ae_model, student_logits, topk_teache
     compressedk_probs = compressedk_probs[..., :-1, :].contiguous().float()  # [B, T-1, K]
 
     # (2) find the sum over each row of topk_prob while keeping dimensions.
-    prob_sum = topk_prob.sum(dim=-1, keepdim=True)  # [B, T-1, 1]
+    prob_sum = topk_prob.sum(dim=-1)  # [B, T-1]
     #prob_max = torch.amax(topk_prob, dim=-1)  # [B, T-1]
     confidence_threshold = float(os.environ.get("CONFIDENCE_THRESHOLD", 0.5))
     M = (prob_sum >= confidence_threshold) 
