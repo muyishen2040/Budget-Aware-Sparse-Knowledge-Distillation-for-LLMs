@@ -104,6 +104,7 @@ def hybrid_loss(compressedk_probs, ae_model, student_logits, topk_probs, topk_id
     
     recon_loss = compression_loss(compressedk_probs, ae_model, student_logits, topk_probs, topk_ids, labels, temperature=temperature, alpha=alpha)
 
+
     total_loss = alpha * ce_loss + (1 - alpha)/2 * kl_loss + (1 - alpha)/2 * recon_loss
     
     return total_loss, ce_loss, recon_loss
@@ -157,15 +158,18 @@ def compute_fusion_loss(compressedk_probs, ae_model, student_logits, topk_teache
     in the teacher's distribution.
     '''
 
-    # (1) shift the student_logits, topk_teacher_probs, and topk_indices along the time dimension by one step
+    # (1) shift the student_logits, topk_teacher_probs/indices, labels, and compressedk_probs along the time dimension by one step.
     student_logits = student_logits[..., :-1, :].contiguous().float()  # [B, T-1, V]
     topk_prob = topk_teacher_probs[..., :-1, :].contiguous().float()  # [B, T-1, K]
     topk_ids = topk_indices[..., :-1, :].contiguous() # [B, T-1, K]
+    shift_labels = labels[..., 1:].contiguous()
+    compressedk_probs = compressedk_probs[..., :-1, :].contiguous().float()  # [B, T-1, K]
 
-    # (2) find the row-wise max prob over topk_prob, which is the teacher's confidence in its top-k predictions for each position
-    prob_max = torch.amax(topk_prob, dim=-1)  # [B, T-1]
+    # (2) find the sum over each row of topk_prob while keeping dimensions.
+    prob_sum = topk_prob.sum(dim=-1, keepdim=True)  # [B, T-1, 1]
+    #prob_max = torch.amax(topk_prob, dim=-1)  # [B, T-1]
     confidence_threshold = float(os.environ.get("CONFIDENCE_THRESHOLD", 0.5))
-    M = (prob_max >= confidence_threshold) 
+    M = (prob_sum >= confidence_threshold) 
     
     # (3) use the mask 'M' to partition out the rows from the student_logits, topk_prob, and topk_ids where the teacher is confident vs. not confident
     # (a) topk_probs. Let N+ be the number of positions where the teacher is confident, and N- be the number of positions where the teacher is not confident. Then we have:
@@ -178,32 +182,48 @@ def compute_fusion_loss(compressedk_probs, ae_model, student_logits, topk_teache
     student_confident_logits = student_logits[M]  # [N+, V]
     student_unconfident_logits = student_logits[~M]  # [N-, V]
     
-    # (4) for the confident rows, compute the log softmax of the student logits, gatther the log probs at the teacher's top-k indices, and compute the KL divergence loss between the student and teacher top-k distributions as in standard top-k KD
+    # (4) for the confident rows, compute the log softmax of the student logits, gatther the log probs at the teacher's top-k indices, and compute the KL divergence loss between the student 
+    # and teacher top-k distributions as in standard top-k KD
     if student_confident_logits is not None and student_confident_logits.shape[0] > 0:
-      student_full_logprobs_confident = F.log_softmax(student_confident_logits / temperature, dim=-1)  # [N+, V]
-      student_logprobs_confident = torch.gather(student_full_logprobs_confident, dim=-1, index=topk_confident_ids)  # [N+, K]
-      teacher_probs_confident = topk_confident_probs / topk_confident_probs.sum(dim=-1, keepdim=True)  # renormalize to ensure it's a valid distribution over the top-k support
-      k = topk_ids.size(-1)
-      kl_confident = F.kl_div(
-        student_logprobs_confident.view(-1, k),
-        teacher_probs_confident.view(-1, k),
-        reduction='batchmean'
-      ) * (temperature ** 2)
+        student_full_logprobs_confident = F.log_softmax(student_confident_logits / temperature, dim=-1)  # [N+, V]
+        student_logprobs_confident = torch.gather(student_full_logprobs_confident, dim=-1, index=topk_confident_ids)  # [N+, K]
+        teacher_probs_confident = topk_confident_probs / topk_confident_probs.sum(dim=-1, keepdim=True)  # renormalize to ensure it's a valid distribution over the top-k support
+        k = topk_ids.size(-1)
+        kl_confident_tensor = F.kl_div(
+            student_logprobs_confident.view(-1, k),
+            teacher_probs_confident.view(-1, k),
+            reduction='none'
+        ) 
+        kl_confident_tensor = kl_confident_tensor.sum(dim=-1).view(*shift_labels.shape)
+        valid_mask = (shift_labels != -100)
+        
+        if valid_mask.any():
+            kl_confident = kl_confident_tensor[valid_mask].mean() * (temperature ** 2)
+        else:
+            kl_confident = torch.zeros((), device=student_logits.device, dtype=student_logits.dtype)
     else:
       kl_confident = 0.0
 
-    # (5) for the unconfident rows, first the ae_model must be used to compress the vocab dimension from V --> K
+    # (5) for the unconfident rows, first the ae_model must be used to compress the vocab dimension from V --> K in the student logits
     if student_unconfident_logits is not None and student_unconfident_logits.shape[0] > 0:
-      student_unconfident_fullprobs = F.softmax(student_unconfident_logits / temperature, dim=-1)  # [N-, V]   
-      _, student_unconfident_probs = ae_model(student_unconfident_fullprobs.to(dtype=torch.float32))# [N-, V] -> [N-, K]
-      student_unconfident_logprobs = torch.log(student_unconfident_probs)  # don't forget that we need log probs of x_hat for KL 
-      teacher_probs_unconfident = topk_unconfident_probs / topk_unconfident_probs.sum(dim=-1, keepdim=True)  # renormalize to ensure it's a valid distribution over the top-k support
-      k = topk_ids.size(-1)
-      kl_unconfident = F.kl_div(
+        student_unconfident_fullprobs = F.softmax(student_unconfident_logits / temperature, dim=-1)  # [N-, V]   
+        _, student_unconfident_probs = ae_model(student_unconfident_fullprobs.to(dtype=torch.float32))# [N-, V] -> [N-, K]
+        student_unconfident_logprobs = torch.log(student_unconfident_probs)  # don't forget that we need log probs of x_hat for KL 
+        # FOR THE TEACHER DISTRIBUTION, WE USE THE COMPRESSED-K PROBS IN THE AE LATENT SPACE.
+        teacher_probs_unconfident = compressedk_probs[~M] # [N-, K] the teacher distribution for the unconfident positions is the compressed distribution in the AE latent space
+        assert teacher_probs_unconfident.shape == student_unconfident_logprobs.shape, "Shape mismatch between student and teacher distributions for unconfident positions"
+        k = topk_ids.size(-1)
+        kl_unconfident_tensor = F.kl_div(
             student_unconfident_logprobs.view(-1, k),
             teacher_probs_unconfident.view(-1, k),
-            reduction='batchmean'
-        ) * (temperature ** 2)
+            reduction='none'
+        ) 
+        kl_unconfident_tensor = kl_unconfident_tensor.sum(dim=-1).view(*shift_labels.shape)
+        valid_mask = (shift_labels != -100)
+        if valid_mask.any():
+            kl_unconfident = kl_unconfident_tensor[valid_mask].mean() * (temperature ** 2)
+        else:
+            kl_unconfident = torch.zeros((), device=student_logits.device, dtype=student_logits.dtype)
     else:
         kl_unconfident = 0.0
 
