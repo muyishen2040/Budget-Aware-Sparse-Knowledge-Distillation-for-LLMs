@@ -16,7 +16,7 @@ This folder contains the code we used to generate the validation PPL and NLL plo
 ![Validation NLL vs budget](all_methods_plots/validation_nll_vs_budget.png)
 
 ## Full Project Poster
-[Poster PDF](11711-final-project-poster.pdf)
+[Poster PDF](https://drive.google.com/file/d/18p-Zd08L1cyRhnDK7ykYS1KKHRs7v0JL/view?usp=sharing)
 
 
 ## Regenerating Plots
