@@ -11,6 +11,8 @@ Where $L_{hybrid} = 0.7*D_{KL}(P_{Teacher-Top-k}||P_{Student-Top-k}) + 0.3*D_{KL
 
 Here, $P_{Teacher-Compressed} = Encoder(Full-Teacher-Logits)$ and $P_{Student-Compressed} = Encoder(Full-Student-Logits)$. That is, the full teacher and student logits are compressed into an AE latent space of dimenion = L. Here, we consider L=8 for the latent dimension. 
 
+Note: Our AE was trained in this notebook: https://colab.research.google.com/drive/10m2bb0JRg7G8Xf0PT2aL0DMEMp5FPlti?usp=sharing 
+
 ### Experiment 
 To test our AE-based KD pipeline, we run top-8 student training using the new loss function give above. Here, our training budget cost will be 3K = 3*8 = 24 because training a single token will require storing the top-8 logits, top-8 token indices, and the L=8 compressed logits.
 
