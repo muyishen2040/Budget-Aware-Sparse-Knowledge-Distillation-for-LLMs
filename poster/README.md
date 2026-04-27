@@ -28,8 +28,13 @@ python poster/plotter.py
 ```
 
 ## Diagrams
+
 The illustrations of our adaptive sparse methods were manually drawn in Notability.
 
-![Figure 1: Adaptive Top-K](poster_diagrams/adaptive_top_k.png)
+### Figure 1: Adaptive Top-K
 
-![Figure 2: Adaptive Top-K + Head Mass Weighting](poster_diagrams/head_mass_weighting.png)
+![Adaptive Top-K](poster_diagrams/adaptive_top_k.png)
+
+### Figure 2: Adaptive Top-K + Head Mass Weighting
+
+![Adaptive Top-K + Head Mass Weighting](poster_diagrams/head_mass_weighting.png)
