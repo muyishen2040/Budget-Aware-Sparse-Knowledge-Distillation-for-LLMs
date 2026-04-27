@@ -101,13 +101,15 @@ def hybrid_loss(compressedk_probs, ae_model, student_logits, topk_probs, topk_id
     '''
                             
     loss, ce_loss, kl_loss = compute_cached_topk_kd_loss(compressedk_probs, ae_model, student_logits, topk_probs, topk_ids, labels, temperature=temperature, alpha=alpha)
-    
-    recon_loss = compression_loss(compressedk_probs, ae_model, student_logits, topk_probs, topk_ids, labels, temperature=temperature, alpha=alpha)
+    ae_loss = compression_loss(compressedk_probs, ae_model, student_logits, topk_probs, topk_ids, labels, temperature=temperature, alpha=alpha)
 
-
-    total_loss = alpha * ce_loss + (1 - alpha)/2 * kl_loss + (1 - alpha)/2 * recon_loss
+    n_ae = float(os.environ.get("n_ae", 0.5))
+    n_kd = float(os.environ.get("n_kd", 0.5))
     
-    return total_loss, ce_loss, recon_loss
+    hybrid_loss = n_ae * ae_loss + n_kd * kl_loss
+    total_loss = alpha * ce_loss + (1 - alpha) * hybrid_loss
+    
+    return total_loss, ce_loss, ae_loss
 
 
 def compression_loss(compressedk_probs, ae_model, student_logits, topk_probs, topk_ids, labels, temperature=1.0, alpha=0.5):
@@ -125,28 +127,40 @@ def compression_loss(compressedk_probs, ae_model, student_logits, topk_probs, to
     Returns:
         Total scalar loss (mean over batch)
     """
-    # Time-shift the student logits and compressed teacher probs to align with next-token prediction
+    
+    # (1) time shift
     student_logits = student_logits[..., :-1, :].contiguous().float()  # [B, T-1, V]
+    topk_prob = topk_probs[..., :-1, :].contiguous().float()  # [B, T-1, K]
+    topk_ids = topk_ids[..., :-1, :].contiguous() # [B, T-1, K]
     compressedk_probs = compressedk_probs[..., :-1, :].contiguous().float()  # [B, T-1, K]
+    shift_labels = labels[..., 1:].contiguous()
     
-    # Hyperparameters for optional latent regularization
-    lambda_latent = 0.0
-    z = None
-    eps = 1e-8
+    # (2) compute the softmax of the student logits to get a valid distribution, then pass through the AE to get the compressed distribution in the AE latent space
+    student_full_probs = F.softmax(student_logits / temperature, dim=-1)  # [B, T-1, V]
+    _, student_compressed_probs = ae_model(student_full_probs.to(dtype=torch.float32)) # [B, T-1, V] -> [B, T-1, K]
     
-    # Compute the compression loss: KL(compressed_teacher || student)
-    compressedk_probs = compressedk_probs.clamp(min=eps) #[B, T-1, K] compressed teacher distribution in AE latent space, already softmaxed by AE
-    student_probs = F.softmax(student_logits / temperature, dim=-1) # the student logits must be softmaxed prior to AE compression, since the AE was trained on probs. 
-    _, student_probs = ae_model(student_probs.to(dtype=torch.float32))  # [B, T-1, V] -> [B, T-1, K=8] get student distribution in AE latent space. The AE latent space has a softmax in it.
-    student_probs = student_probs.clamp(min=eps)
-    kl_recon = (compressedk_probs * (compressedk_probs.log() - student_probs.log())).sum(dim=-1).mean()  # Row-wise KL divergence: KL(x || x_hat)
-    # Optionally regularize latent representation toward uniformity
-    if z is not None and lambda_latent > 0:
-        z = z.clamp(min=eps)
-        uniform = torch.full_like(z, 1.0 / z.size(-1))
-        kl_latent = (z * (z.log() - uniform.log())).sum(dim=-1).mean()
-        return kl_recon + lambda_latent * kl_latent
-    return kl_recon
+    # (3) get the student log probs from the compressed student probs
+    student_compressed_log_probs = torch.log(student_compressed_probs)  # [B, T-1, K]
+    
+    # (4) renormalize the compressed teacher probs to ensure it's a valid distribution over the K support
+    teacher_compressed_probs = compressedk_probs / compressedk_probs.sum(dim=-1, keepdim=True)  # [B, T-1, K]
+    
+    # (5) compute the KL divergence between the compressed teacher distribution and the compressed student distribution as the compression loss
+    k = topk_ids.size(-1)
+    kl_compression_tensor = F.kl_div(
+        student_compressed_log_probs.view(-1, k),
+        teacher_compressed_probs.view(-1, k),
+        reduction='none'
+    )
+    kl_compression_tensor = kl_compression_tensor.sum(dim=-1).view(*shift_labels.shape) #shape of shift_labels = [B, T-1]
+    valid_mask = (shift_labels != -100)
+    if valid_mask.any():
+        kl_compression_loss = kl_compression_tensor[valid_mask].mean() * (temperature ** 2)
+    else:
+        kl_compression_loss = torch.zeros((), device=student_logits.device, dtype=student_logits.dtype)
+        
+    return kl_compression_loss
+    
  
 def compute_fusion_loss(compressedk_probs, ae_model, student_logits, topk_teacher_probs, topk_indices, labels, temperature=1.0, alpha=0.5):
     '''
@@ -157,7 +171,7 @@ def compute_fusion_loss(compressedk_probs, ae_model, student_logits, topk_teache
     distribution which may still capture useful information about which tokens are generally more likely than others without forcing the student to match potentially spurious peaks 
     in the teacher's distribution.
     '''
-
+    
     # (1) shift the student_logits, topk_teacher_probs/indices, labels, and compressedk_probs along the time dimension by one step.
     student_logits = student_logits[..., :-1, :].contiguous().float()  # [B, T-1, V]
     topk_prob = topk_teacher_probs[..., :-1, :].contiguous().float()  # [B, T-1, K]
@@ -232,7 +246,7 @@ def compute_fusion_loss(compressedk_probs, ae_model, student_logits, topk_teache
     loss = alpha * ce_loss + (1 - alpha) * (kl_confident + kl_unconfident) 
     return loss, ce_loss, (kl_confident + kl_unconfident)
             
-                 
+                               
 def compute_cached_topk_kd_loss(compressedk_probs, ae_model, student_logits, topk_teacher_probs, topk_indices, labels, temperature=1.0, alpha=0.5):  
     shift_logits = student_logits[..., :-1, :].contiguous().float()
     shift_labels = labels[..., 1:].contiguous()

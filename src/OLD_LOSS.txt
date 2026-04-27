@@ -147,3 +147,48 @@ def compute_compression_kd_loss(compressedk_probs, compressed_indices, student_l
     loss = alpha * ce_loss + (1 - alpha) * kl_loss
     
     return loss, ce_loss, kl_lossf
+
+
+
+
+
+
+
+
+def compression_loss(compressedk_probs, ae_model, student_logits, topk_probs, topk_ids, labels, temperature=1.0, alpha=0.5):
+    """
+    Computes KL(compressed_teacher || student) with optional latent regularization.
+    Args:
+        compressedk_probs: Tensor of shape (B, T, K) — Compressed Teacher distributions, softmaxed along K.
+        ae_model: The autoencoder model, used to compute the latent representation z if lambda_latent > 0.
+        student_logits: Tensor of shape (B, T, V) — Student model logits before softmax.
+        topk_probs: Tensor of shape (B, T, K) — Teacher probabilities for the top-K tokens.
+        topk_ids: Tensor of shape (B, T, K) — Token IDs corresponding to the top-K probabilities.
+        labels: Tensor of shape (B, T) — Ground truth token IDs for CE loss.
+        temperature: Temperature for scaling logits in KD loss.
+        alpha: Weighting factor between CE loss and KD loss.
+    Returns:
+        Total scalar loss (mean over batch)
+    """
+    # Time-shift the student logits and compressed teacher probs to align with next-token prediction
+    student_logits = student_logits[..., :-1, :].contiguous().float()  # [B, T-1, V]
+    compressedk_probs = compressedk_probs[..., :-1, :].contiguous().float()  # [B, T-1, K]
+    
+    # Hyperparameters for optional latent regularization
+    lambda_latent = 0.0
+    z = None
+    eps = 1e-8
+    
+    # Compute the compression loss: KL(compressed_teacher || student)
+    compressedk_probs = compressedk_probs.clamp(min=eps) #[B, T-1, K] compressed teacher distribution in AE latent space, already softmaxed by AE
+    student_probs = F.softmax(student_logits / temperature, dim=-1) # the student logits must be softmaxed prior to AE compression, since the AE was trained on probs. 
+    _, student_probs = ae_model(student_probs.to(dtype=torch.float32))  # [B, T-1, V] -> [B, T-1, K=8] get student distribution in AE latent space. The AE latent space has a softmax in it.
+    student_probs = student_probs.clamp(min=eps)
+    kl_recon = (compressedk_probs * (compressedk_probs.log() - student_probs.log())).sum(dim=-1).mean()  # Row-wise KL divergence: KL(x || x_hat)
+    # Optionally regularize latent representation toward uniformity
+    if z is not None and lambda_latent > 0:
+        z = z.clamp(min=eps)
+        uniform = torch.full_like(z, 1.0 / z.size(-1))
+        kl_latent = (z * (z.log() - uniform.log())).sum(dim=-1).mean()
+        return kl_recon + lambda_latent * kl_latent
+    return kl_recon

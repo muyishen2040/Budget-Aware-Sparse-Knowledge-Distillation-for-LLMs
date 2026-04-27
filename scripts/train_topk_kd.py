@@ -95,9 +95,14 @@ def main():
     print(f"*** Using hybrid loss: {USE_HYBRID_LOSS}")
     USE_FUSION_LOSS = os.environ.get("USE_FUSION_LOSS", "False")
     print(f"*** Using fusion loss: {USE_FUSION_LOSS}")
-    if USE_HYBRID_LOSS.lower() == "true":
+    if USE_HYBRID_LOSS.lower() == "true" and USE_FUSION_LOSS.lower() == "true":
         confidence_threshold = float(os.environ.get("CONFIDENCE_THRESHOLD", 0.5))
         print(f" --> *** Confidence threshold: {confidence_threshold}")
+    if USE_HYBRID_LOSS.lower() == "true" and USE_FUSION_LOSS.lower() == "false":
+        n_ae = float(os.environ.get("n_ae", 0.5))
+        n_kd = float(os.environ.get("n_kd", 0.5))
+        print(f" --> *** Hybrid loss weights - AE: {n_ae} | KD: {n_kd}")
+        
     
     for epoch in range(num_epochs):
         for batch in tqdm(train_loader):
