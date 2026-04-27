@@ -13,7 +13,7 @@ from matplotlib.ticker import NullFormatter
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(SCRIPT_DIR)
 LOG_FILE = os.path.join(ROOT_DIR, "experiment_log.csv")
-OUTPUT_DIR = SCRIPT_DIR
+OUTPUT_DIR = os.path.join(SCRIPT_DIR, "all_methods_plots")
 
 TARGET_RUNS = [
     {
@@ -85,6 +85,7 @@ STYLE = {
     "full": "#e31a1c",
     "adapt": "#d915d8",
     "head": "#5717f2",
+    "hybrid": "#0000ff",
 }
 
 METHOD_STYLE = {
@@ -95,6 +96,7 @@ METHOD_STYLE = {
     "Full KD": {"color": STYLE["full"], "marker": "s", "size": 92},
     "Adapt. Top-K": {"color": STYLE["adapt"], "marker": "^", "size": 130},
     "+ Head-Mass Wt.": {"color": STYLE["head"], "marker": "p", "size": 150},
+    "Top-8 + Autoencoder Hybrid": {"color": STYLE["hybrid"], "marker": "D", "size": 118},
 }
 
 LEGEND_LABELS = {
@@ -103,6 +105,7 @@ LEGEND_LABELS = {
     "Sampling KD": "Sampling",
     "Adapt. Top-K": "Adaptive Top-k (Ours)",
     "+ Head-Mass Wt.": "Adaptive Top-k with Head-Mass Weighting (Ours)",
+    "Top-8 + Autoencoder Hybrid": "Top-8 + Autoencoder Hybrid (Ours)",
 }
 
 
@@ -140,6 +143,15 @@ def build_plot_rows(log_file):
                 "ppl": float(row["val_ppl"]),
             }
         )
+    plot_rows.append(
+        {
+            "method": "Top-8 + Autoencoder Hybrid",
+            "group": "Ours",
+            "budget": 24,
+            "nll": 3.7465,
+            "ppl": 42.37,
+        }
+    )
     return plot_rows
 
 
@@ -246,7 +258,14 @@ def plot_metric(rows, metric, label, output_dir, output_name):
     ax.set_xticks(ticks)
     ax.set_xticklabels([compact_budget(tick) for tick in ticks])
 
-    legend_methods = ["Full KD", "Top-K", "Sampling KD", "Adapt. Top-K", "+ Head-Mass Wt."]
+    legend_methods = [
+        "Full KD",
+        "Top-K",
+        "Sampling KD",
+        "Adapt. Top-K",
+        "+ Head-Mass Wt.",
+        "Top-8 + Autoencoder Hybrid",
+    ]
     legend_handles = []
     for method in legend_methods:
         style = {"color": STYLE["topk"], "marker": "o"} if method == "Top-K" else METHOD_STYLE[method]
