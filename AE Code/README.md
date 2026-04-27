@@ -1,4 +1,4 @@
-### This Part of the Repo Documents the Use of an Autoencoder (AE) to supplement the Top-K operation. Note that this is an extension of the base project and is not included in the main report.
+## This Part of the Repo Documents the Use of an Autoencoder (AE) to supplement the Top-K operation. Note that this is an extension of the base project and is not included in the main report.
 
 ### Method 
 Here, we introduce an addition term into the standard top-K loss function. 
