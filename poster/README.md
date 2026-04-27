@@ -2,7 +2,7 @@
 
 ## Overview
 
-This folder contains the code we used to generate the validation PPL and NLL plots for our poster.
+This folder contains the visuals from our poster, as well as the code we used to generate the validation PPL and NLL plots in our poster.
 
 ## Outputs
 
